@@ -1,0 +1,267 @@
+---
+title: "Backup & Recovery"
+description: "Back up and restore Weaviate data using S3, GCS, Azure Blob Storage, or the local filesystem."
+keywords: ["backup", "restore", "recovery", "S3", "GCS", "Azure", "point-in-time"]
+---
+
+Weaviate backups are consistent, point-in-time snapshots of one or more collections. During a backup, write operations to the target collections are briefly paused to ensure a consistent snapshot is captured before resuming. Backups are non-blocking for other collections.
+
+Weaviate supports four storage backends: Amazon S3, Google Cloud Storage (GCS), Azure Blob Storage, and the local filesystem.
+
+<Warning>
+  Restoring a backup overwrites all existing data in the targeted collections. If the collection already exists on the destination instance, its data will be replaced entirely by the backup contents.
+</Warning>
+
+## Backend configuration
+
+<Tabs>
+  <Tab title="S3">
+    Enable the S3 backup module and configure credentials:
+
+    ```bash
+    ENABLE_MODULES=backup-s3
+    BACKUP_S3_BUCKET=my-weaviate-backups
+    BACKUP_S3_PATH=backups
+    BACKUP_S3_REGION=us-east-1
+
+    # Credentials (or use an IAM role / instance profile)
+    AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+    AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    ```
+
+    To use a custom endpoint (MinIO, LocalStack):
+
+    ```bash
+    BACKUP_S3_ENDPOINT=http://minio:9000
+    BACKUP_S3_USE_SSL=false
+    ```
+  </Tab>
+  <Tab title="GCS">
+    Enable the GCS backup module:
+
+    ```bash
+    ENABLE_MODULES=backup-gcs
+    BACKUP_GCS_BUCKET=my-weaviate-backups
+    BACKUP_GCS_PATH=backups
+
+    # Application Default Credentials or service account key
+    GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+    ```
+  </Tab>
+  <Tab title="Azure Blob Storage">
+    Enable the Azure backup module:
+
+    ```bash
+    ENABLE_MODULES=backup-azure
+    BACKUP_AZURE_CONTAINER=my-weaviate-backups
+    BACKUP_AZURE_PATH=backups
+
+    # Authentication
+    AZURE_STORAGE_ACCOUNT=mystorageaccount
+    AZURE_STORAGE_KEY=base64-encoded-key
+    ```
+
+    Alternatively, use a connection string:
+
+    ```bash
+    AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
+    ```
+  </Tab>
+  <Tab title="Filesystem">
+    The filesystem backend writes backups to a local directory on the Weaviate node. It is suitable for testing but should not be used as a sole backup strategy in production since the backup shares the same failure domain as the database.
+
+    ```bash
+    ENABLE_MODULES=backup-filesystem
+    BACKUP_FILESYSTEM_PATH=/var/lib/weaviate/backups
+    ```
+
+    Ensure the path is a persistent volume in containerized deployments.
+  </Tab>
+</Tabs>
+
+## Backup and restore workflow
+
+<Steps>
+  <Step title="Start a backup">
+    Create a backup with a unique identifier. Optionally specify which collections to include; omitting `include` backs up all collections.
+
+    ```bash
+    curl -X POST http://localhost:8080/v1/backups/s3 \
+      -H "Authorization: Bearer <key>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "id": "backup-2026-04-03",
+        "include": ["Article", "Comment"]
+      }'
+    ```
+
+    The response indicates whether the backup started successfully:
+
+    ```json
+    {
+      "id": "backup-2026-04-03",
+      "status": "STARTED",
+      "backend": "s3",
+      "classes": ["Article", "Comment"]
+    }
+    ```
+  </Step>
+  <Step title="Check backup status">
+    Backups run asynchronously. Poll the status endpoint until the backup completes:
+
+    ```bash
+    curl http://localhost:8080/v1/backups/s3/backup-2026-04-03 \
+      -H "Authorization: Bearer <key>"
+    ```
+
+    ```json
+    {
+      "id": "backup-2026-04-03",
+      "status": "SUCCESS",
+      "backend": "s3",
+      "classes": ["Article", "Comment"],
+      "startedAt": "2026-04-03T10:00:00Z",
+      "completedAt": "2026-04-03T10:02:14Z"
+    }
+    ```
+
+    Possible `status` values: `STARTED`, `TRANSFERRING`, `TRANSFERRED`, `SUCCESS`, `FAILED`.
+  </Step>
+  <Step title="Restore the backup">
+    Restore a backup to a Weaviate instance. The target instance must have the same backend module enabled and access to the same bucket or path.
+
+    ```bash
+    curl -X POST http://localhost:8080/v1/backups/s3/backup-2026-04-03/restore \
+      -H "Authorization: Bearer <key>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "include": ["Article", "Comment"]
+      }'
+    ```
+
+    To restore only a subset of the backed-up collections, specify them in `include`. To exclude certain collections, use `exclude` instead.
+  </Step>
+  <Step title="Verify the restore">
+    Check the restore status:
+
+    ```bash
+    curl http://localhost:8080/v1/backups/s3/backup-2026-04-03/restore \
+      -H "Authorization: Bearer <key>"
+    ```
+
+    ```json
+    {
+      "id": "backup-2026-04-03",
+      "status": "SUCCESS",
+      "backend": "s3",
+      "classes": ["Article", "Comment"]
+    }
+    ```
+
+    Confirm object counts are correct by querying the restored collections.
+  </Step>
+</Steps>
+
+## REST API reference
+
+| Operation | Method | Path |
+|---|---|---|
+| Create backup | `POST` | `/v1/backups/{backend}` |
+| List backups | `GET` | `/v1/backups/{backend}` |
+| Get backup status | `GET` | `/v1/backups/{backend}/{id}` |
+| Restore backup | `POST` | `/v1/backups/{backend}/{id}/restore` |
+| Get restore status | `GET` | `/v1/backups/{backend}/{id}/restore` |
+
+Where `{backend}` is one of `s3`, `gcs`, `azure`, or `filesystem`.
+
+### List all backups
+
+```bash
+curl http://localhost:8080/v1/backups/s3 \
+  -H "Authorization: Bearer <key>"
+```
+
+```json
+[
+  {
+    "id": "backup-2026-04-03",
+    "status": "SUCCESS",
+    "backend": "s3"
+  },
+  {
+    "id": "backup-2026-04-02",
+    "status": "SUCCESS",
+    "backend": "s3"
+  }
+]
+```
+
+## Backup scheduling
+
+Weaviate does not include a built-in scheduler. Use an external cron job or a Kubernetes `CronJob` to run backups on a schedule.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weaviate-backup
+spec:
+  schedule: "0 2 * * *"   # daily at 02:00 UTC
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: curlimages/curl:latest
+              command:
+                - sh
+                - -c
+                - |
+                  curl -sf -X POST http://weaviate:8080/v1/backups/s3 \
+                    -H "Authorization: Bearer $WEAVIATE_API_KEY" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"id\": \"backup-$(date +%Y-%m-%d)\"}"
+              env:
+                - name: WEAVIATE_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: weaviate-secret
+                      key: api-key
+```
+
+## Restore considerations
+
+### Restoring to a clean instance
+
+The safest restore strategy is to restore to a fresh Weaviate instance with no existing data. This avoids conflicts and ensures a clean state.
+
+### Restoring to an existing instance
+
+If the target instance already contains the collections you are restoring, their existing data will be overwritten. Collections not included in the backup request are unaffected.
+
+<Warning>
+  There is no merge operation. A restore fully replaces the targeted collection's data with the backup contents.
+</Warning>
+
+### Version compatibility
+
+Backups are generally forward-compatible within the same major Weaviate version. Restoring a backup created on an older patch version to a newer one is supported. Restoring across major versions is not guaranteed and should be tested before use in production.
+
+## Multi-tenant backups
+
+For [multi-tenant collections](/data/multi-tenancy), backups capture all tenants by default. You can also target specific tenants at restore time — check the backup API response for tenant-level granularity options when the collection has multi-tenancy enabled.
+
+```bash
+# Backup a multi-tenant collection
+curl -X POST http://localhost:8080/v1/backups/s3 \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "backup-mt-2026-04-03",
+    "include": ["MultiTenantCollection"]
+  }'
+```
+
+The backup includes all active tenants in the collection. Inactive (offloaded) tenants may not be included depending on their state at backup time.

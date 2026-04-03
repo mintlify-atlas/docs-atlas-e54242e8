@@ -1,0 +1,490 @@
+---
+title: "Objects API"
+description: "Create, read, update, delete, and check individual objects using the Weaviate REST API."
+keywords: ["objects", "CRUD", "REST", "Weaviate"]
+---
+
+The Objects API provides full CRUD access to individual objects stored in Weaviate. All paths are relative to `http://localhost:8080/v1`.
+
+## Create object
+
+<br />
+
+**`POST /v1/objects`**
+
+Creates a new object in the specified collection.
+
+### Request body
+
+<ParamField body="class" type="string" required>
+  Name of the collection (class) to create the object in. Must match an existing collection in the schema.
+</ParamField>
+
+<ParamField body="properties" type="object" required>
+  Key-value pairs of property names and values. Must conform to the collection's property definitions.
+</ParamField>
+
+<ParamField body="id" type="string">
+  UUID for the object. Weaviate generates one automatically if omitted. Must be a valid UUID v4.
+</ParamField>
+
+<ParamField body="vector" type="number[]">
+  Pre-computed vector embedding. If the collection uses a vectorizer module, you can omit this and Weaviate will vectorize the object automatically.
+</ParamField>
+
+<ParamField body="tenant" type="string">
+  Tenant name. Required if the collection has multi-tenancy enabled.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://localhost:8080/v1/objects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "Article",
+    "properties": {
+      "title": "Weaviate and vector search",
+      "body": "Weaviate is an open-source vector database."
+    }
+  }'
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+uuid = collection.data.insert({
+    "title": "Weaviate and vector search",
+    "body": "Weaviate is an open-source vector database."
+})
+print(uuid)
+```
+
+</CodeGroup>
+
+### Response
+
+Returns the created object with its generated `id`.
+
+<ResponseField name="id" type="string" required>
+  UUID of the created object.
+</ResponseField>
+
+<ResponseField name="class" type="string" required>
+  Collection name.
+</ResponseField>
+
+<ResponseField name="properties" type="object" required>
+  The stored property values.
+</ResponseField>
+
+<ResponseField name="vector" type="number[]">
+  The object's vector embedding. Included only if the object was vectorized or a vector was provided.
+</ResponseField>
+
+<ResponseField name="creationTimeUnix" type="number">
+  Unix timestamp (milliseconds) when the object was created.
+</ResponseField>
+
+```json
+{
+  "id": "3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a",
+  "class": "Article",
+  "properties": {
+    "title": "Weaviate and vector search",
+    "body": "Weaviate is an open-source vector database."
+  },
+  "creationTimeUnix": 1712000000000,
+  "lastUpdateTimeUnix": 1712000000000
+}
+```
+
+---
+
+## Get object
+
+<br />
+
+**`GET /v1/objects/{className}/{id}`**
+
+Retrieves a single object by its class name and UUID.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection the object belongs to.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  UUID of the object.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="include" type="string">
+  Comma-separated list of additional metadata to include. Supported values: `vector`, `classification`, `featureProjection`.
+</ParamField>
+
+<ParamField query="consistency_level" type="string">
+  Read consistency level for replicated collections. One of `ONE`, `QUORUM`, or `ALL`. Defaults to `QUORUM`.
+</ParamField>
+
+<ParamField query="tenant" type="string">
+  Tenant name. Required if the collection has multi-tenancy enabled.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl "http://localhost:8080/v1/objects/Article/3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a?include=vector"
+```
+
+```python Python
+import weaviate
+from weaviate.classes.query import MetadataQuery
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+obj = collection.query.fetch_object_by_id(
+    "3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a",
+    include_vector=True
+)
+print(obj.properties)
+```
+
+</CodeGroup>
+
+### Response
+
+<ResponseField name="id" type="string" required>
+  UUID of the object.
+</ResponseField>
+
+<ResponseField name="class" type="string" required>
+  Collection name.
+</ResponseField>
+
+<ResponseField name="properties" type="object" required>
+  The stored property values.
+</ResponseField>
+
+<ResponseField name="vector" type="number[]">
+  The object's vector embedding. Only returned when `include=vector` is specified.
+</ResponseField>
+
+<ResponseField name="creationTimeUnix" type="number">
+  Unix timestamp (milliseconds) of object creation.
+</ResponseField>
+
+<ResponseField name="lastUpdateTimeUnix" type="number">
+  Unix timestamp (milliseconds) of last update.
+</ResponseField>
+
+---
+
+## List objects
+
+<br />
+
+**`GET /v1/objects`**
+
+Returns a paginated list of objects from a collection.
+
+### Query parameters
+
+<ParamField query="class" type="string" required>
+  Name of the collection to list objects from.
+</ParamField>
+
+<ParamField query="limit" type="number" default="25">
+  Maximum number of objects to return. Defaults to `25`.
+</ParamField>
+
+<ParamField query="offset" type="number" default="0">
+  Number of objects to skip. Use together with `limit` for offset-based pagination.
+</ParamField>
+
+<ParamField query="after" type="string">
+  Cursor for cursor-based pagination. Pass the UUID of the last object from the previous page. Cannot be used with `offset`.
+</ParamField>
+
+<ParamField query="include" type="string">
+  Comma-separated list of additional metadata to include. Supported values: `vector`, `classification`.
+</ParamField>
+
+<ParamField query="tenant" type="string">
+  Tenant name. Required if the collection has multi-tenancy enabled.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl (offset pagination)
+curl "http://localhost:8080/v1/objects?class=Article&limit=10&offset=0"
+```
+
+```bash curl (cursor pagination)
+curl "http://localhost:8080/v1/objects?class=Article&limit=10&after=3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a"
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+# Iterator-based (recommended for large datasets)
+for obj in collection.iterator():
+    print(obj.uuid, obj.properties)
+```
+
+</CodeGroup>
+
+### Response
+
+<ResponseField name="objects" type="object[]" required>
+  Array of object records.
+</ResponseField>
+
+<ResponseField name="totalResults" type="number">
+  Total count of objects in the collection matching the query (available with offset pagination).
+</ResponseField>
+
+```json
+{
+  "objects": [
+    {
+      "id": "3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a",
+      "class": "Article",
+      "properties": { "title": "Weaviate and vector search" },
+      "creationTimeUnix": 1712000000000,
+      "lastUpdateTimeUnix": 1712000000000
+    }
+  ],
+  "totalResults": 100
+}
+```
+
+<Tip>
+  Use cursor-based pagination (`after`) when iterating over large collections. Offset-based pagination (`offset`) scans all preceding records and becomes slower as `offset` grows.
+</Tip>
+
+---
+
+## Update object (patch)
+
+<br />
+
+**`PATCH /v1/objects/{className}/{id}`**
+
+Merges the provided properties into an existing object. Properties not included in the request body are left unchanged.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  UUID of the object to update.
+</ParamField>
+
+### Request body
+
+<ParamField body="class" type="string" required>
+  Collection name (must match the path parameter).
+</ParamField>
+
+<ParamField body="properties" type="object" required>
+  Partial property map. Only specified keys are updated; existing keys not listed are preserved.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X PATCH http://localhost:8080/v1/objects/Article/3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "Article",
+    "properties": {
+      "title": "Updated title"
+    }
+  }'
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+collection.data.update(
+    uuid="3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a",
+    properties={"title": "Updated title"}
+)
+```
+
+</CodeGroup>
+
+Returns `204 No Content` on success.
+
+---
+
+## Replace object
+
+<br />
+
+**`PUT /v1/objects/{className}/{id}`**
+
+Replaces an existing object in full. All properties not included in the request body are removed from the object.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  UUID of the object to replace.
+</ParamField>
+
+### Request body
+
+<ParamField body="class" type="string" required>
+  Collection name.
+</ParamField>
+
+<ParamField body="properties" type="object" required>
+  Complete property map for the object. Any properties not listed are removed.
+</ParamField>
+
+<ParamField body="vector" type="number[]">
+  Replacement vector. If omitted and the collection uses a vectorizer, the new vector is computed from `properties`.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT http://localhost:8080/v1/objects/Article/3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "Article",
+    "properties": {
+      "title": "Completely new title",
+      "body": "Completely new body text."
+    }
+  }'
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+collection.data.replace(
+    uuid="3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a",
+    properties={
+        "title": "Completely new title",
+        "body": "Completely new body text."
+    }
+)
+```
+
+</CodeGroup>
+
+Returns `200` with the full updated object on success.
+
+---
+
+## Delete object
+
+<br />
+
+**`DELETE /v1/objects/{className}/{id}`**
+
+Permanently deletes an object. This action cannot be undone.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  UUID of the object to delete.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="consistency_level" type="string">
+  Write consistency level. One of `ONE`, `QUORUM`, or `ALL`.
+</ParamField>
+
+<ParamField query="tenant" type="string">
+  Tenant name. Required if the collection has multi-tenancy enabled.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE \
+  "http://localhost:8080/v1/objects/Article/3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a"
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+collection.data.delete_by_id("3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a")
+```
+
+</CodeGroup>
+
+Returns `204 No Content` on success. Returns `404` if the object does not exist.
+
+---
+
+## Check object existence
+
+<br />
+
+**`HEAD /v1/objects/{className}/{id}`**
+
+Checks whether an object exists without returning its data. Useful for existence checks without the overhead of fetching the full object.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection.
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  UUID to check.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -I \
+  "http://localhost:8080/v1/objects/Article/3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a"
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+exists = collection.data.exists("3c5e9c4a-1f2b-4d8e-a3b7-0f1e2d3c4b5a")
+print(exists)  # True or False
+```
+
+</CodeGroup>
+
+Returns `200` if the object exists, `404` if it does not. No response body is returned.

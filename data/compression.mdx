@@ -1,0 +1,191 @@
+---
+title: 'Vector compression'
+description: 'Reduce memory usage and improve query throughput with Product Quantization (PQ), Binary Quantization (BQ), or Scalar Quantization (SQ) in Weaviate.'
+keywords: ['compression', 'quantization', 'PQ', 'BQ', 'SQ', 'product quantization', 'binary quantization', 'scalar quantization', 'memory', 'hnsw']
+---
+
+Weaviate stores vectors in memory to serve low-latency search. For large collections this can require tens or hundreds of gigabytes of RAM. Vector compression reduces this cost by encoding vectors in a more compact format at the expense of a small, controllable accuracy trade-off.
+
+Weaviate supports three compression schemes for HNSW indices:
+
+| Method | Encoding | Typical memory reduction | Accuracy impact |
+|--------|----------|--------------------------|-----------------|
+| PQ — Product Quantization | Segment-based codebook | 4–32× | Low to moderate |
+| BQ — Binary Quantization | 1-bit per dimension | ~32× | Higher; mitigated by rescoring |
+| SQ — Scalar Quantization | 8-bit per dimension | ~4× | Low |
+
+<Note>
+Only one compression method can be active per HNSW index at a time. Enabling a second method while another is active returns a configuration error.
+</Note>
+
+## Why compression matters
+
+Without compression, a 1,536-dimensional `float32` vector occupies 6,144 bytes (6 KB). One million such vectors require roughly 6 GB of RAM just for vector data — before accounting for HNSW graph edges and object storage. Compression reduces this footprint to make large-scale deployments economically feasible.
+
+The compressed vectors are used for the initial ANN search. Weaviate then fetches full-precision vectors for the top candidates and rescores them, recovering much of the lost accuracy.
+
+## Compression methods
+
+<Tabs>
+  <Tab title="Product Quantization (PQ)">
+
+PQ divides each vector into segments and replaces each segment with an index into a learned codebook. The codebook is built by running k-means clustering on a sample of your training data.
+
+**Configuration**
+
+```python
+import weaviate
+import weaviate.classes.config as wc
+
+client = weaviate.connect_to_local()
+
+client.collections.create(
+    name="Article",
+    vector_index_config=wc.Configure.VectorIndex.hnsw(
+        distance_metric=wc.VectorDistances.COSINE,
+        quantizer=wc.Configure.VectorIndex.Quantizer.pq(
+            segments=96,          # Number of sub-spaces. Must divide vector dimensions evenly.
+            centroids=256,        # Codebook size per segment. Default: 256 (uses 8 bits per segment).
+            training_limit=100_000,  # Minimum objects required before PQ training starts. Default: 100,000.
+            encoder_type=wc.PQEncoderType.KMEANS,  # Encoder: "kmeans" (default) or "tile"
+            encoder_distribution=wc.PQEncoderDistribution.LOG_NORMAL,  # "log-normal" (default) or "normal"
+        ),
+    ),
+)
+```
+
+**Key parameters**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `segments` | `0` (auto) | Number of vector sub-spaces. 0 lets Weaviate choose. Higher values = better quality, larger codebook. |
+| `centroids` | `256` | Codebook entries per segment. 256 = 8 bits. Powers of 2 up to 256. |
+| `trainingLimit` | `100,000` | Weaviate trains the codebook once this many objects are indexed. |
+| `encoder.type` | `kmeans` | `kmeans` for general use; `tile` for tile-based encoding. |
+| `encoder.distribution` | `log-normal` | Distribution assumption for encoder weight initialization. |
+
+<Warning>
+PQ requires a sufficient number of objects for training. If you enable PQ before `trainingLimit` objects are indexed, Weaviate stores uncompressed vectors until the limit is reached and then triggers training automatically. Querying during this pre-training period uses full-precision vectors and is not affected by accuracy trade-offs, but memory savings are not yet realized.
+</Warning>
+
+**Choosing segments**
+
+`segments` must divide the vector dimension evenly. For a 1,536-dimensional vector, valid values include 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, and 1536. More segments means higher reconstruction quality at the cost of a larger codebook.
+
+  </Tab>
+  <Tab title="Binary Quantization (BQ)">
+
+BQ encodes each vector dimension as a single bit (positive → 1, negative → 0), reducing a `float32` vector to 1/32 of its original size. This provides the highest memory savings of any supported method.
+
+The trade-off is higher accuracy loss compared to PQ or SQ. Weaviate mitigates this by fetching full-precision vectors for the top `rescoreLimit` candidates and reranking them before returning results.
+
+BQ works best with models whose embeddings have high overlap between relevant and irrelevant documents, as the binary representation preserves directional similarity reasonably well. It is most effective with cosine and dot-product distance metrics.
+
+**Configuration**
+
+```python
+client.collections.create(
+    name="Article",
+    vector_index_config=wc.Configure.VectorIndex.hnsw(
+        distance_metric=wc.VectorDistances.COSINE,
+        quantizer=wc.Configure.VectorIndex.Quantizer.bq(
+            rescore_limit=200,  # Number of candidates to fetch in full precision for rescoring.
+            cache=False,        # Cache full-precision vectors in memory alongside compressed ones.
+        ),
+    ),
+)
+```
+
+**Key parameters**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `rescoreLimit` | auto | Candidates to re-evaluate in full precision. Higher values improve recall at the cost of latency. |
+| `cache` | `false` | Keep original vectors in memory for faster rescoring. Reduces memory savings but lowers rescore latency. |
+
+**BQ requires no training data.** Unlike PQ, BQ compression is applied immediately at index time without a warmup period.
+
+  </Tab>
+  <Tab title="Scalar Quantization (SQ)">
+
+SQ maps each `float32` dimension to an `int8` value (8-bit quantization), reducing memory usage to approximately 1/4 while preserving more accuracy than BQ. It also requires training data, like PQ, but typically reaches acceptable accuracy faster.
+
+**Configuration**
+
+```python
+client.collections.create(
+    name="Article",
+    vector_index_config=wc.Configure.VectorIndex.hnsw(
+        distance_metric=wc.VectorDistances.COSINE,
+        quantizer=wc.Configure.VectorIndex.Quantizer.sq(
+            training_limit=100_000,  # Objects required before training. Default: 100,000.
+            rescore_limit=20,        # Candidates to rescore in full precision. Default: 20.
+        ),
+    ),
+)
+```
+
+**Key parameters**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `trainingLimit` | `100,000` | Object count before SQ calibration runs. Vectors are stored uncompressed until this threshold. |
+| `rescoreLimit` | `20` | Candidates fetched at full precision for final reranking. |
+
+  </Tab>
+</Tabs>
+
+## Enabling compression on an existing collection
+
+You can enable compression after a collection already has data by updating its vector index configuration. PQ and SQ will queue a training job that starts once the `trainingLimit` is met; BQ takes effect immediately.
+
+```python
+collection = client.collections.get("Article")
+
+# Enable SQ on an existing HNSW collection
+collection.config.update(
+    vector_index_config=wc.Reconfigure.VectorIndex.hnsw(
+        quantizer=wc.Reconfigure.VectorIndex.Quantizer.sq(
+            training_limit=100_000,
+            rescore_limit=20,
+        )
+    )
+)
+```
+
+## When to use each method
+
+| Scenario | Recommended method |
+|----------|--------------------|
+| Largest possible memory reduction, recall ~0.9+ acceptable | BQ |
+| Best recall with significant memory savings | SQ |
+| Fine-grained control over memory vs. accuracy trade-off | PQ |
+| Collection under ~10,000 objects | None — use Flat index |
+| Collection growing dynamically from small to large | Dynamic index with BQ on the HNSW side |
+
+## Performance benchmarks
+
+Compression benchmarks vary by model, dataset, and hardware. Consult the [Weaviate benchmarking documentation](https://weaviate.io/developers/weaviate/benchmarks) for ANN benchmark results across compression methods. The following rough guidance applies in practice:
+
+- **BQ** typically achieves ~0.90–0.95 recall at 1/32 of uncompressed memory usage.
+- **SQ** typically achieves ~0.98 recall at ~1/4 memory usage.
+- **PQ** recall depends heavily on the number of segments and centroids. With 96 segments and 256 centroids on 1,536-dim vectors, expect ~0.95–0.98 recall.
+
+All methods benefit from higher `rescoreLimit` values, at the cost of additional latency for full-precision vector fetches.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Collections & schema" href="/data/schema" icon="table">
+    Configure vector index type and base HNSW settings.
+  </Card>
+  <Card title="Vector search" href="/search/vector-search" icon="magnifying-glass">
+    Run ANN search against compressed and uncompressed collections.
+  </Card>
+  <Card title="Hybrid search" href="/search/hybrid-search" icon="magnifying-glass-plus">
+    Combine vector search with BM25 keyword search.
+  </Card>
+  <Card title="REST API: schema" href="/api/rest-schema" icon="code">
+    Update vector index config via the REST API.
+  </Card>
+</CardGroup>

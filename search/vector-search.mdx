@@ -1,0 +1,330 @@
+---
+title: 'Vector search'
+description: 'Search by semantic similarity using natural language, raw vectors, existing objects, or images.'
+keywords: ['vector search', 'near text', 'near vector', 'near object', 'near image', 'semantic search', 'similarity search']
+---
+
+Vector search finds objects whose vector representations are closest to a query vector. Instead of matching exact keywords, Weaviate converts your query into a vector embedding and returns the objects nearest to it in vector space.
+
+## Search operators
+
+Weaviate provides four operators for vector-based retrieval. Choose the one that matches how you supply the query.
+
+| Operator | Use when |
+|---|---|
+| `near_text` | You have a natural language query and a text vectorizer configured |
+| `near_vector` | You have a pre-computed embedding vector |
+| `near_object` | You want results similar to an existing object in the collection |
+| `near_image` | You have an image and a multi-modal vectorizer configured |
+
+<Tabs>
+  <Tab title="near_text">
+
+`near_text` vectorizes your query string using the collection's configured vectorizer and returns the closest objects.
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.query.near_text(
+    query="climate change effects on agriculture",
+    limit=10,
+    return_metadata=wvc.query.MetadataQuery(distance=True, certainty=True),
+)
+
+for obj in results.objects:
+    print(obj.properties["title"], obj.metadata.distance)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          nearText: { concepts: [\"climate change effects on agriculture\"] }
+          limit: 10
+        ) {
+          title
+          _additional { distance certainty }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+### Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `query` | `str` | The text to vectorize and search with |
+| `limit` | `int` | Maximum number of results to return |
+| `offset` | `int` | Number of results to skip (for pagination) |
+| `distance` | `float` | Maximum vector distance from the query (lower = more similar) |
+| `certainty` | `float` | Minimum certainty score (0–1, cosine distance only) |
+| `filters` | `Filter` | Pre-filter objects before scoring |
+| `return_metadata` | `MetadataQuery` | Which metadata fields to include in each result |
+| `autocut` | `int` | Automatically trim results based on score gaps |
+
+### moveTo and moveAwayFrom
+
+`near_text` supports query steering: nudge the search vector toward or away from additional concepts.
+
+```python python
+results = collection.query.near_text(
+    query="healthy food",
+    move_to=wvc.query.Move(force=0.5, concepts=["vegetables", "organic"]),
+    move_away=wvc.query.Move(force=0.3, concepts=["fast food"]),
+    limit=10,
+)
+```
+
+  </Tab>
+  <Tab title="near_vector">
+
+`near_vector` accepts a raw embedding vector directly. Use this when you generate embeddings outside of Weaviate.
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+# Supply a pre-computed embedding
+query_vector = [0.12, -0.34, 0.56, ...]  # must match collection's vector dimensions
+
+results = collection.query.near_vector(
+    near_vector=query_vector,
+    limit=10,
+    return_metadata=wvc.query.MetadataQuery(distance=True),
+)
+
+for obj in results.objects:
+    print(obj.properties["title"], obj.metadata.distance)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          nearVector: { vector: [0.12, -0.34, 0.56] }
+          limit: 10
+        ) {
+          title
+          _additional { distance }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+  </Tab>
+  <Tab title="near_object">
+
+`near_object` uses the vector of an existing object (identified by UUID) as the query vector.
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.query.near_object(
+    near_object="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    limit=10,
+    return_metadata=wvc.query.MetadataQuery(distance=True),
+)
+
+for obj in results.objects:
+    print(obj.uuid, obj.metadata.distance)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          nearObject: { id: \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\" }
+          limit: 10
+        ) {
+          title
+          _additional { distance }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+<Note>
+The source object is included in results unless you filter it out by ID. Its distance from itself will be `0`.
+</Note>
+
+  </Tab>
+  <Tab title="near_image">
+
+`near_image` searches by image similarity using a multi-modal vectorizer such as `img2vec-neural` or `multi2vec-clip`.
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+import base64
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Product")
+
+with open("query.jpg", "rb") as f:
+    image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+results = collection.query.near_image(
+    near_image=image_b64,
+    limit=5,
+    return_metadata=wvc.query.MetadataQuery(distance=True),
+)
+
+for obj in results.objects:
+    print(obj.properties["name"], obj.metadata.distance)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Product(
+          nearImage: { image: \"<base64-encoded-image>\" }
+          limit: 5
+        ) {
+          name
+          _additional { distance }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+  </Tab>
+</Tabs>
+
+## Distance metrics
+
+The distance metric is set per collection when you define the vector index configuration. It cannot be changed after data is imported.
+
+| Metric | Value | Notes |
+|---|---|---|
+| Cosine | `cosine` | Default. Measures angle between vectors; supports `certainty` |
+| Dot product | `dot` | Negative dot product; higher raw score = more similar |
+| L2 squared | `l2-sq` | Euclidean distance squared |
+| Hamming | `hamming` | Number of positions where values differ |
+| Manhattan | `manhattan` | Sum of absolute differences per dimension |
+
+<Warning>
+`certainty` is only available with cosine distance. Using `certainty` with any other metric returns an error.
+</Warning>
+
+## Metadata in results
+
+Request metadata fields via `return_metadata` (Python client) or `_additional` (GraphQL).
+
+| Field | Description |
+|---|---|
+| `distance` | Raw distance from the query vector (lower = more similar for cosine, l2-sq, hamming, manhattan) |
+| `certainty` | Normalized similarity score in [0, 1]; only available with cosine distance |
+| `score` | Composite score used in hybrid results |
+| `uuid` | Object identifier |
+| `vector` | The stored object vector |
+| `creation_time_unix` | Unix timestamp of creation |
+| `last_update_time_unix` | Unix timestamp of last update |
+
+## Autocut
+
+`autocut` trims results automatically based on gaps between consecutive distance scores. Set `autocut=1` to keep only the first natural cluster of results, `autocut=2` to keep the first two clusters, and so on.
+
+```python python
+results = collection.query.near_text(
+    query="renewable energy",
+    autocut=1,
+    limit=100,  # upper bound; autocut may return fewer
+)
+```
+
+<Note>
+`autocut` examines gaps between consecutive scores. Setting `limit` high enough for autocut to find a meaningful gap gives better results.
+</Note>
+
+## GroupBy
+
+Use `GroupBy` to bucket results by a property value. This is useful when multiple objects share a common field (such as `author` or `category`) and you want one representative result per group.
+
+```python python
+from weaviate.classes.query import GroupBy
+
+results = collection.query.near_text(
+    query="machine learning",
+    limit=20,
+    group_by=GroupBy(
+        prop="category",
+        number_of_groups=3,
+        objects_per_group=5,
+    ),
+)
+
+for group in results.groups.values():
+    print(group.name, [o.properties["title"] for o in group.objects])
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Combine vector and keyword search with the alpha parameter.
+  </Card>
+  <Card title="Filters" icon="filter" href="/search/filters">
+    Pre-filter objects by property values before vector scoring.
+  </Card>
+  <Card title="Vectorizers" icon="plug" href="/modules/vectorizers">
+    Configure which model vectorizes your data and queries.
+  </Card>
+  <Card title="Generative search (RAG)" icon="robot" href="/search/generative-rag">
+    Generate responses over retrieved results.
+  </Card>
+</CardGroup>

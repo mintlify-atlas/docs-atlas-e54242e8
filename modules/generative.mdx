@@ -1,0 +1,212 @@
+---
+title: "Generative modules"
+description: "Integrate large language models with Weaviate for retrieval-augmented generation (RAG) — send retrieved objects directly to an LLM for summarization, Q&A, and transformation."
+keywords: ["generative", "RAG", "LLM", "generative-openai", "generative-cohere", "retrieval augmented generation", "modules"]
+---
+
+Generative modules connect Weaviate to large language models (LLMs). After a search retrieves relevant objects, you can pass them to an LLM in the same query — without writing any intermediate application code. This pattern is called retrieval-augmented generation (RAG).
+
+Weaviate supports two generative query modes:
+
+- **Single prompt** — sends each retrieved object individually to the LLM with a per-object prompt template.
+- **Grouped task** — sends all retrieved objects together with a single prompt, useful for summarization or comparison.
+
+## Available generative modules
+
+Weaviate supports 14 generative module integrations. See the full module list and configuration below.
+
+### Full module list
+
+| Module | Provider | Models | API key env var |
+|--------|----------|--------|-----------------|
+| `generative-openai` | OpenAI / Azure OpenAI | GPT-4o, GPT-4, GPT-3.5-Turbo | `OPENAI_APIKEY` / `AZURE_APIKEY` |
+| `generative-cohere` | Cohere | Command R, Command R+, Command | `COHERE_APIKEY` |
+| `generative-anthropic` | Anthropic | Claude 3.5 Sonnet, Claude 3 Opus, Haiku | `ANTHROPIC_APIKEY` |
+| `generative-google` | Google | Gemini 1.5 Pro, Gemini Flash | `GOOGLE_APIKEY` |
+| `generative-aws` | AWS Bedrock | Llama, Titan, Nova, Mistral | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| `generative-mistral` | Mistral AI | Mistral Large, Mixtral | `MISTRAL_APIKEY` |
+| `generative-ollama` | Ollama | Any model via local Ollama runtime | — |
+| `generative-nvidia` | NVIDIA | Llama, Nemotron via NVIDIA API | `NVIDIA_APIKEY` |
+| `generative-xai` | xAI | Grok models | `XAI_APIKEY` |
+| `generative-friendliai` | FriendliAI | Llama and other open models | `FRIENDLIAI_TOKEN` |
+| `generative-databricks` | Databricks | Models served via Databricks endpoints | `DATABRICKS_TOKEN` |
+| `generative-anyscale` | Anyscale | Llama and other open models | `ANYSCALE_APIKEY` |
+| `generative-octoai` | OctoAI | Open-source models via OctoAI | `OCTOAI_APIKEY` |
+| `generative-contextualai` | Contextual AI | RAG-optimized language models | `CONTEXTUALAI_APIKEY` |
+
+## Enabling a generative module
+
+Add the module name to `ENABLE_MODULES` when starting Weaviate:
+
+```bash
+docker run -p 8080:8080 -p 50051:50051 \
+  -e ENABLE_MODULES=text2vec-openai,generative-openai \
+  -e OPENAI_APIKEY=sk-... \
+  cr.weaviate.io/semitechnologies/weaviate:latest
+```
+
+<Note>
+  You typically enable both a vectorizer module and a generative module together. The vectorizer handles embedding at import and query time; the generative module handles the LLM call after retrieval.
+</Note>
+
+## Configuring a generative module in a collection
+
+Specify the generative module when creating a collection. This sets the default LLM for all generative queries on that collection.
+
+<AccordionGroup>
+  <Accordion title="OpenAI (generative-openai)">
+    ```python
+    import weaviate
+    from weaviate.classes.config import Configure
+
+    client = weaviate.connect_to_local()
+
+    client.collections.create(
+        name="Article",
+        vector_config=Configure.Vectors.text2vec_openai(),
+        generative_config=Configure.Generative.openai(
+            model="gpt-4o",
+        ),
+    )
+    ```
+
+    ```bash
+    export OPENAI_APIKEY=sk-...
+    ```
+  </Accordion>
+
+  <Accordion title="Cohere (generative-cohere)">
+    ```python
+    client.collections.create(
+        name="Article",
+        vector_config=Configure.Vectors.text2vec_cohere(),
+        generative_config=Configure.Generative.cohere(
+            model="command-r-plus",
+        ),
+    )
+    ```
+
+    ```bash
+    export COHERE_APIKEY=...
+    ```
+  </Accordion>
+
+  <Accordion title="Anthropic (generative-anthropic)">
+    ```python
+    client.collections.create(
+        name="Article",
+        vector_config=Configure.Vectors.text2vec_openai(),
+        generative_config=Configure.Generative.anthropic(
+            model="claude-3-5-sonnet-20241022",
+        ),
+    )
+    ```
+
+    ```bash
+    export ANTHROPIC_APIKEY=sk-ant-...
+    ```
+  </Accordion>
+
+  <Accordion title="Google (generative-google)">
+    ```python
+    client.collections.create(
+        name="Article",
+        vector_config=Configure.Vectors.text2vec_google(),
+        generative_config=Configure.Generative.google(
+            model="gemini-1.5-pro",
+        ),
+    )
+    ```
+
+    ```bash
+    export GOOGLE_APIKEY=...
+    ```
+  </Accordion>
+
+  <Accordion title="Ollama (generative-ollama)">
+    Run a model locally with Ollama and point Weaviate at the Ollama API:
+
+    ```python
+    client.collections.create(
+        name="Article",
+        vector_config=Configure.Vectors.text2vec_ollama(
+            api_endpoint="http://host.docker.internal:11434",
+            model="nomic-embed-text",
+        ),
+        generative_config=Configure.Generative.ollama(
+            api_endpoint="http://host.docker.internal:11434",
+            model="llama3.2",
+        ),
+    )
+    ```
+
+    No API key is needed for Ollama — it runs entirely on your machine.
+  </Accordion>
+</AccordionGroup>
+
+## Using generative search in queries
+
+Once a collection has a generative module configured, add a `generate` clause to any search query.
+
+### Single prompt
+
+A single prompt sends each result object to the LLM separately. Use `{property}` placeholders to reference object properties.
+
+```python
+articles = client.collections.get("Article")
+
+response = articles.generate.near_text(
+    query="climate change impacts",
+    limit=3,
+    single_prompt="Summarize this article in one sentence: {title}. Content: {body}",
+)
+
+for obj in response.objects:
+    print(obj.generated)
+```
+
+### Grouped task
+
+A grouped task sends all retrieved objects together in a single LLM call. This is useful for synthesis, comparison, or multi-document summarization.
+
+```python
+response = articles.generate.near_text(
+    query="renewable energy",
+    limit=5,
+    grouped_task="Based on these articles, what are the three most important trends in renewable energy?",
+)
+
+print(response.generated)
+```
+
+### Hybrid search with generation
+
+Generative queries work with any search type — vector, keyword, or hybrid:
+
+```python
+response = articles.generate.hybrid(
+    query="solar panel efficiency",
+    alpha=0.75,
+    limit=4,
+    grouped_task="Summarize the key findings about solar panel efficiency from these articles.",
+)
+
+print(response.generated)
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Generative RAG search" icon="robot" href="/search/generative-rag">
+    Full guide to writing generative queries with prompts and grouped tasks.
+  </Card>
+  <Card title="Vectorizer modules" icon="plug" href="/modules/vectorizers">
+    Configure embedding models to use with generative search.
+  </Card>
+  <Card title="Hybrid search" icon="magnifying-glass" href="/search/hybrid-search">
+    Combine vector and keyword search before passing results to an LLM.
+  </Card>
+  <Card title="Reranker modules" icon="arrow-up-down" href="/modules/rerankers">
+    Rerank results before sending them to a generative module.
+  </Card>
+</CardGroup>

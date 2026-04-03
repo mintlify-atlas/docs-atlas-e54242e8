@@ -1,0 +1,284 @@
+---
+title: "Backup modules"
+description: "Back up and restore Weaviate data to AWS S3, Google Cloud Storage, Azure Blob Storage, or the local filesystem using built-in backup modules."
+keywords: ["backup", "restore", "S3", "GCS", "Azure", "backup-s3", "backup-gcs", "backup-azure", "backup-filesystem"]
+---
+
+Weaviate includes native backup and restore support through pluggable backup modules. Backups capture the full state of one or more collections — including objects, vectors, and the schema — and write them to a storage backend. You can restore a backup to the same cluster or a different one.
+
+## Available backup modules
+
+| Module | Backend | Use case |
+|--------|---------|----------|
+| `backup-s3` | AWS S3 and S3-compatible stores (MinIO, Ceph) | Production — cloud or on-premises |
+| `backup-gcs` | Google Cloud Storage | Production — GCP |
+| `backup-azure` | Azure Blob Storage | Production — Azure |
+| `backup-filesystem` | Local filesystem | Development and testing only |
+
+<Warning>
+  The `backup-filesystem` module writes backups to a directory on the same host as Weaviate. If the host fails, the backup is lost. Do not use `backup-filesystem` for production data.
+</Warning>
+
+## Configuration
+
+<Tabs>
+  <Tab title="S3">
+    Enable the `backup-s3` module and set the required environment variables:
+
+    | Variable | Required | Description |
+    |----------|----------|-------------|
+    | `BACKUP_S3_BUCKET` | Yes | S3 bucket name |
+    | `BACKUP_S3_ENDPOINT` | No | Custom endpoint for S3-compatible stores (e.g., MinIO) |
+    | `BACKUP_S3_PATH` | No | Path prefix inside the bucket |
+    | `BACKUP_S3_USE_SSL` | No | Use TLS. Defaults to `true`. Set to `false` to disable |
+
+    AWS credentials are read from the standard AWS credential chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, or an IAM role).
+
+    ```bash
+    docker run -p 8080:8080 -p 50051:50051 \
+      -e ENABLE_MODULES=text2vec-openai,backup-s3 \
+      -e BACKUP_S3_BUCKET=my-weaviate-backups \
+      -e AWS_ACCESS_KEY_ID=AKIA... \
+      -e AWS_SECRET_ACCESS_KEY=... \
+      cr.weaviate.io/semitechnologies/weaviate:latest
+    ```
+
+    For S3-compatible stores:
+
+    ```bash
+    -e BACKUP_S3_ENDPOINT=http://minio:9000
+    -e BACKUP_S3_USE_SSL=false
+    ```
+  </Tab>
+  <Tab title="GCS">
+    Enable the `backup-gcs` module and set the required environment variables:
+
+    | Variable | Required | Description |
+    |----------|----------|-------------|
+    | `BACKUP_GCS_BUCKET` | Yes | GCS bucket name |
+    | `BACKUP_GCS_PATH` | No | Path prefix inside the bucket |
+
+    Authentication uses Application Default Credentials (ADC). Mount a service account key or use Workload Identity on GKE.
+
+    ```bash
+    docker run -p 8080:8080 -p 50051:50051 \
+      -e ENABLE_MODULES=text2vec-openai,backup-gcs \
+      -e BACKUP_GCS_BUCKET=my-weaviate-backups \
+      -v /path/to/service-account.json:/google/credentials.json \
+      -e GOOGLE_APPLICATION_CREDENTIALS=/google/credentials.json \
+      cr.weaviate.io/semitechnologies/weaviate:latest
+    ```
+  </Tab>
+  <Tab title="Azure">
+    Enable the `backup-azure` module and set the required environment variables:
+
+    | Variable | Required | Description |
+    |----------|----------|-------------|
+    | `BACKUP_AZURE_CONTAINER` | Yes | Azure Blob Storage container name |
+    | `BACKUP_AZURE_PATH` | No | Path prefix inside the container |
+
+    Authentication uses the `AZURE_STORAGE_CONNECTION_STRING` or `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` environment variables.
+
+    ```bash
+    docker run -p 8080:8080 -p 50051:50051 \
+      -e ENABLE_MODULES=text2vec-openai,backup-azure \
+      -e BACKUP_AZURE_CONTAINER=weaviate-backups \
+      -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=..." \
+      cr.weaviate.io/semitechnologies/weaviate:latest
+    ```
+  </Tab>
+  <Tab title="Filesystem">
+    Enable the `backup-filesystem` module and set the path:
+
+    | Variable | Required | Description |
+    |----------|----------|-------------|
+    | `BACKUP_FILESYSTEM_PATH` | No | Directory to write backups. Defaults to `/tmp/backups` |
+
+    ```bash
+    docker run -p 8080:8080 -p 50051:50051 \
+      -e ENABLE_MODULES=backup-filesystem \
+      -e BACKUP_FILESYSTEM_PATH=/var/backups/weaviate \
+      -v /host/backup/dir:/var/backups/weaviate \
+      cr.weaviate.io/semitechnologies/weaviate:latest
+    ```
+
+    <Warning>
+      Mount the backup path to a host volume. Without a volume mount, backups disappear when the container is removed.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Backup workflow
+
+<Steps>
+  <Step title="Enable the backup module">
+    Add the backup module to `ENABLE_MODULES` and configure the required environment variables for your storage backend before starting Weaviate.
+  </Step>
+  <Step title="Create a backup">
+    Send a `POST` request to `/v1/backups/{backend}` with a unique backup ID. Replace `{backend}` with `s3`, `gcs`, `azure`, or `filesystem`.
+
+    ```bash
+    curl -X POST http://localhost:8080/v1/backups/s3 \
+      -H "Content-Type: application/json" \
+      -d '{
+        "id": "backup-2024-01-15",
+        "include": ["Article", "Author"]
+      }'
+    ```
+
+    Omit `include` to back up all collections. Use `exclude` to skip specific collections:
+
+    ```json
+    {
+      "id": "backup-2024-01-15",
+      "exclude": ["TempCollection"]
+    }
+    ```
+
+    The response contains the initial status:
+
+    ```json
+    {
+      "id": "backup-2024-01-15",
+      "backend": "s3",
+      "status": "STARTED",
+      "classes": ["Article", "Author"]
+    }
+    ```
+  </Step>
+  <Step title="Check backup status">
+    Backups run asynchronously. Poll the status endpoint until the backup is `SUCCESS` or `FAILED`.
+
+    ```bash
+    curl http://localhost:8080/v1/backups/s3/backup-2024-01-15
+    ```
+
+    ```json
+    {
+      "id": "backup-2024-01-15",
+      "backend": "s3",
+      "status": "SUCCESS",
+      "classes": ["Article", "Author"],
+      "started_at": "2024-01-15T10:00:00Z",
+      "completed_at": "2024-01-15T10:02:34Z"
+    }
+    ```
+
+    Possible status values: `STARTED`, `TRANSFERRING`, `TRANSFERRED`, `SUCCESS`, `FAILED`.
+  </Step>
+  <Step title="Restore a backup">
+    Send a `POST` request to `/v1/backups/{backend}/{id}/restore`. The target cluster must have the same backup module configured and access to the same storage backend.
+
+    ```bash
+    curl -X POST http://localhost:8080/v1/backups/s3/backup-2024-01-15/restore \
+      -H "Content-Type: application/json" \
+      -d '{
+        "include": ["Article"]
+      }'
+    ```
+
+    Omit `include` to restore all collections from the backup.
+
+    Check restore status:
+
+    ```bash
+    curl http://localhost:8080/v1/backups/s3/backup-2024-01-15/restore
+    ```
+  </Step>
+</Steps>
+
+## Backup scope
+
+### Full cluster backup
+
+Omit the `include` and `exclude` fields to back up all collections:
+
+```json
+{
+  "id": "full-backup-2024-01-15"
+}
+```
+
+### Specific collections
+
+Use `include` to select a subset:
+
+```json
+{
+  "id": "articles-only",
+  "include": ["Article", "Author", "Tag"]
+}
+```
+
+### Exclude collections
+
+Use `exclude` to back up everything except certain collections:
+
+```json
+{
+  "id": "no-temp",
+  "exclude": ["StagingData", "TempImports"]
+}
+```
+
+## Multi-tenancy considerations
+
+When backing up a collection that uses multi-tenancy, the backup includes all tenants in the collection by default. You cannot select individual tenants in a backup request — the granularity is at the collection level.
+
+During restore, all tenants in the backup are restored. If a tenant already exists in the target cluster with conflicting data, the restore will fail for that tenant. Drop the existing collection before restoring if you need a clean restore.
+
+<Note>
+  Backup and restore operations are consistent at the collection level. Weaviate uses a copy-on-write snapshot mechanism so ongoing writes during a backup are safe, but objects written after the snapshot began will not appear in the backup.
+</Note>
+
+## Python client example
+
+The Python client wraps the backup REST API:
+
+```python
+import weaviate
+
+client = weaviate.connect_to_local()
+
+# Create a backup
+result = client.backup.create(
+    backup_id="backup-2024-01-15",
+    backend="s3",
+    include_collections=["Article", "Author"],
+    wait_for_completion=True,
+)
+print(result.status)
+
+# Restore a backup
+result = client.backup.restore(
+    backup_id="backup-2024-01-15",
+    backend="s3",
+    include_collections=["Article"],
+    wait_for_completion=True,
+)
+print(result.status)
+
+# Check status
+status = client.backup.get_create_status(
+    backup_id="backup-2024-01-15",
+    backend="s3",
+)
+print(status.status)
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Operations: backups" icon="database" href="/operations/backups">
+    Operational guide to scheduling and managing backups in production.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Configure backup modules in a Docker Compose stack.
+  </Card>
+  <Card title="Kubernetes deployment" icon="dharmachakra" href="/deployment/kubernetes">
+    Configure backup modules with Helm values for Kubernetes.
+  </Card>
+  <Card title="REST API overview" icon="code" href="/api/rest-overview">
+    Full REST API reference including backup endpoints.
+  </Card>
+</CardGroup>

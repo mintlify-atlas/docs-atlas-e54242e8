@@ -1,0 +1,290 @@
+---
+title: 'Configuration reference'
+description: 'Complete reference for Weaviate environment variables, grouped by category.'
+keywords: ['configuration', 'environment variables', 'env vars', 'settings', 'reference']
+---
+
+Weaviate is configured entirely through environment variables. Set them in your `docker-compose.yml`, Kubernetes `values.yaml`, or shell environment before starting the server.
+
+<Note>
+Most configuration changes require a server restart. Variables marked as dynamically reloadable can be updated at runtime using the runtime overrides file (`RUNTIME_OVERRIDES_PATH`), without restarting.
+</Note>
+
+## Authentication
+
+Control how clients authenticate to Weaviate. At least one authentication method must be enabled. If no method is configured, Weaviate defaults to anonymous access.
+
+<AccordionGroup>
+  <Accordion title="Anonymous access">
+    <ParamField path="AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED" type="boolean" default="true">
+      Allow requests with no authentication credentials. When set to `false`, every request must include valid credentials.
+
+      Set to `false` in production and configure API key or OIDC authentication.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="API key authentication">
+    <ParamField path="AUTHENTICATION_APIKEY_ENABLED" type="boolean" default="false">
+      Enable static API key authentication. When enabled, clients must pass a key in the `Authorization: Bearer <key>` header.
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_APIKEY_ALLOWED_KEYS" type="string">
+      Comma-separated list of accepted API keys. Each key maps to the corresponding user in `AUTHENTICATION_APIKEY_USERS` by position.
+
+      Example: `"key-one,key-two"`
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_APIKEY_USERS" type="string">
+      Comma-separated list of user identifiers, one per key in `AUTHENTICATION_APIKEY_ALLOWED_KEYS`.
+
+      Example: `"alice@example.com,bob@example.com"`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="OIDC authentication">
+    <ParamField path="AUTHENTICATION_OIDC_ENABLED" type="boolean" default="false">
+      Enable OpenID Connect authentication. Weaviate validates JWTs issued by the configured issuer.
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_OIDC_ISSUER" type="string">
+      URL of the OIDC provider (e.g. `https://accounts.google.com`). Weaviate fetches the provider's JWKS from `{issuer}/.well-known/openid-configuration`.
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_OIDC_CLIENT_ID" type="string">
+      Expected `aud` (audience) claim value in the JWT.
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_OIDC_USERNAME_CLAIM" type="string">
+      JWT claim to use as the username. Common values: `email`, `sub`.
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_OIDC_GROUPS_CLAIM" type="string">
+      JWT claim that contains the user's group memberships. Used with `AUTHORIZATION_ADMINLIST_GROUPS`.
+    </ParamField>
+
+    <ParamField path="AUTHENTICATION_OIDC_SKIP_CLIENT_ID_CHECK" type="boolean" default="false">
+      Skip validation of the `aud` claim. Useful when the token audience is not a single client ID.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+## Authorization
+
+<AccordionGroup>
+  <Accordion title="Admin list">
+    <ParamField path="AUTHORIZATION_ADMINLIST_ENABLED" type="boolean" default="false">
+      Enable the admin list authorization scheme. Users in the admin list have full read/write access; all other authenticated users have read-only access.
+    </ParamField>
+
+    <ParamField path="AUTHORIZATION_ADMINLIST_USERS" type="string">
+      Comma-separated list of user identifiers with full admin access.
+
+      Example: `"alice@example.com,bob@example.com"`
+    </ParamField>
+
+    <ParamField path="AUTHORIZATION_ADMINLIST_READONLY_USERS" type="string">
+      Comma-separated list of user identifiers with read-only access.
+    </ParamField>
+
+    <ParamField path="AUTHORIZATION_ADMINLIST_GROUPS" type="string">
+      Comma-separated list of group names with full admin access. Requires `AUTHENTICATION_OIDC_GROUPS_CLAIM`.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="RBAC">
+    <ParamField path="AUTHORIZATION_RBAC_ENABLED" type="boolean" default="false">
+      Enable role-based access control. Grants fine-grained permissions via roles assigned to users or groups. See [security and RBAC](/operations/security-rbac) for full details.
+    </ParamField>
+
+    <ParamField path="AUTHORIZATION_RBAC_ROOT_USERS" type="string">
+      Comma-separated list of users with root (superadmin) privileges.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+## Storage
+
+<ParamField path="PERSISTENCE_DATA_PATH" type="string" default="./data">
+  Directory where Weaviate stores all persistent data, including object stores, vector indexes, and RAFT state. Mount a volume at this path to preserve data across restarts.
+
+  Restart required: yes.
+</ParamField>
+
+<ParamField path="PERSISTENCE_MEMTABLES_FLUSH_DIRTY_AFTER_SECONDS" type="integer" default="60">
+  Number of seconds after which a dirty LSM memtable is flushed to disk, even if it has not reached the maximum size.
+</ParamField>
+
+<ParamField path="PERSISTENCE_MEMTABLES_MAX_SIZE_MB" type="integer" default="200">
+  Maximum memtable size in megabytes before it is flushed to disk.
+</ParamField>
+
+<ParamField path="DISK_USE_WARNING_PERCENTAGE" type="integer" default="80">
+  Percentage of disk usage at which Weaviate logs a warning. Does not affect read or write operations.
+</ParamField>
+
+<ParamField path="DISK_USE_READONLY_PERCENTAGE" type="integer" default="90">
+  Percentage of disk usage at which Weaviate switches to read-only mode, rejecting all write operations to prevent data corruption. Free disk space to resume writes.
+</ParamField>
+
+## Cluster
+
+These variables configure how Weaviate nodes discover each other and coordinate. Required only for multi-node deployments.
+
+<ParamField path="CLUSTER_HOSTNAME" type="string">
+  Unique identifier for this node within the cluster. Defaults to the system hostname. Must be consistent across restarts — changing it after initial startup can cause the node to be unable to rejoin the cluster.
+
+  Restart required: yes.
+</ParamField>
+
+<ParamField path="CLUSTER_JOIN" type="string">
+  Address of an existing cluster node to join, in `host:port` format. Used during initial cluster formation.
+
+  Example: `"weaviate-0:7946"`
+</ParamField>
+
+<ParamField path="CLUSTER_GOSSIP_BIND_PORT" type="integer" default="7946">
+  Port used for the memberlist gossip protocol. Must be reachable by all nodes in the cluster. The data bind port is automatically set to `CLUSTER_GOSSIP_BIND_PORT + 1`.
+</ParamField>
+
+<ParamField path="RAFT_BOOTSTRAP_EXPECT" type="integer" default="1">
+  Number of voter nodes required to bootstrap the RAFT cluster. Set this to the same value as your replica count. All nodes in the cluster must agree on this value.
+
+  Restart required: yes.
+</ParamField>
+
+<ParamField path="RAFT_JOIN" type="string">
+  Comma-separated list of `hostname:raftPort` peers to join for RAFT consensus.
+
+  Example: `"weaviate-0:8301,weaviate-1:8301,weaviate-2:8301"`
+</ParamField>
+
+<ParamField path="REPLICATION_MINIMUM_FACTOR" type="integer" default="1">
+  Minimum number of replicas a write must reach before Weaviate acknowledges the operation. Increasing this value improves durability at the cost of write latency. Must not exceed the actual replication factor configured on collections.
+</ParamField>
+
+## Modules
+
+<ParamField path="ENABLE_MODULES" type="string">
+  Comma-separated list of module names to load at startup. Only listed modules are available. Modules not included here cannot be used, even if their dependencies are running.
+
+  Example: `"text2vec-openai,generative-openai,reranker-cohere"`
+
+  Restart required: yes.
+</ParamField>
+
+<ParamField path="DEFAULT_VECTORIZER_MODULE" type="string" default="none">
+  Module used to vectorize objects when no vectorizer is specified at the collection level. Set to `none` to require an explicit vectorizer on each collection.
+
+  Common values: `text2vec-openai`, `text2vec-cohere`, `text2vec-model2vec`.
+</ParamField>
+
+<ParamField path="API_BASED_MODULES_DISABLED" type="boolean" default="false">
+  Disable all API-based modules (e.g. OpenAI, Cohere). When set to `true`, only locally hosted modules are available.
+</ParamField>
+
+<ParamField path="MODULES_CLIENT_TIMEOUT" type="string" default="50s">
+  HTTP timeout for requests from Weaviate to module inference services. Accepts Go duration strings (e.g. `"30s"`, `"2m"`).
+</ParamField>
+
+### Module-specific inference URLs
+
+When using locally hosted vectorizers or generative models, configure the inference service URL:
+
+| Variable | Module |
+|---|---|
+| `MODEL2VEC_INFERENCE_API` | `text2vec-model2vec` |
+| `TRANSFORMERS_INFERENCE_API` | `text2vec-transformers` |
+| `COHERE_APIKEY` | `text2vec-cohere`, `generative-cohere` |
+| `OPENAI_APIKEY` | `text2vec-openai`, `generative-openai` |
+| `HUGGINGFACE_APIKEY` | `text2vec-huggingface` |
+
+## Performance
+
+<ParamField path="QUERY_DEFAULTS_LIMIT" type="integer" default="10">
+  Default number of results returned when no `limit` is specified in a query.
+</ParamField>
+
+<ParamField path="QUERY_MAXIMUM_RESULTS" type="integer" default="10000">
+  Hard cap on the number of results a single query can return. Queries requesting more results will be capped at this value.
+</ParamField>
+
+<ParamField path="QUERY_HYBRID_MAXIMUM_RESULTS" type="integer" default="100">
+  Maximum number of results returned by hybrid search queries.
+</ParamField>
+
+<ParamField path="MAX_IMPORT_GOROUTINES_FACTOR" type="float" default="1.0">
+  Multiplier applied to `GOMAXPROCS` to determine the number of goroutines used during batch imports. Increase this to improve import throughput on machines with many CPU cores. Values above `2.0` rarely improve performance.
+</ParamField>
+
+<ParamField path="MAXIMUM_CONCURRENT_GET_REQUESTS" type="integer" default="0">
+  Maximum number of concurrent GET requests. `0` means unlimited.
+</ParamField>
+
+<ParamField path="ASYNC_INDEXING" type="boolean" default="false">
+  Index vectors asynchronously in the background rather than inline with the write operation. Improves write throughput at the cost of search latency for recently imported objects.
+</ParamField>
+
+<ParamField path="AUTOSCHEMA_ENABLED" type="boolean" default="true">
+  Automatically create properties in a collection's schema when objects are inserted with properties not already defined. Disable this in production to enforce strict schemas.
+</ParamField>
+
+## Monitoring
+
+<ParamField path="PROMETHEUS_MONITORING_ENABLED" type="boolean" default="false">
+  Expose a Prometheus metrics endpoint at `:2112/metrics`.
+</ParamField>
+
+<ParamField path="PROMETHEUS_MONITORING_PORT" type="integer" default="2112">
+  Port for the Prometheus metrics endpoint.
+</ParamField>
+
+<ParamField path="PROMETHEUS_MONITORING_GROUP_CLASSES" type="boolean" default="false">
+  Aggregate metrics across all shards into a single set of labels. Reduces metric cardinality in multi-tenant deployments.
+</ParamField>
+
+## Full example
+
+The following example shows a complete environment variable configuration for a production single-node deployment:
+
+```yaml docker-compose.yml (environment section)
+environment:
+  # Authentication
+  AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+  AUTHENTICATION_APIKEY_ENABLED: "true"
+  AUTHENTICATION_APIKEY_ALLOWED_KEYS: "my-secret-api-key"
+  AUTHENTICATION_APIKEY_USERS: "admin@example.com"
+
+  # Authorization
+  AUTHORIZATION_ADMINLIST_ENABLED: "true"
+  AUTHORIZATION_ADMINLIST_USERS: "admin@example.com"
+
+  # Storage
+  PERSISTENCE_DATA_PATH: /var/lib/weaviate
+  DISK_USE_WARNING_PERCENTAGE: "80"
+  DISK_USE_READONLY_PERCENTAGE: "90"
+
+  # Modules
+  ENABLE_MODULES: "text2vec-openai,generative-openai"
+  DEFAULT_VECTORIZER_MODULE: "text2vec-openai"
+
+  # Performance
+  QUERY_DEFAULTS_LIMIT: "25"
+  QUERY_MAXIMUM_RESULTS: "10000"
+
+  # Monitoring
+  PROMETHEUS_MONITORING_ENABLED: "true"
+
+  # Replication
+  REPLICATION_MINIMUM_FACTOR: "1"
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Run Weaviate with Docker Compose using these environment variables.
+  </Card>
+  <Card title="Kubernetes deployment" icon="server" href="/deployment/kubernetes">
+    Configure Weaviate on Kubernetes via Helm values.
+  </Card>
+</CardGroup>

@@ -1,0 +1,222 @@
+---
+title: "Monitoring"
+description: "Monitor Weaviate with Prometheus metrics, health check endpoints, and node status APIs."
+keywords: ["monitoring", "Prometheus", "Grafana", "metrics", "health check", "observability"]
+---
+
+Weaviate exposes Prometheus metrics, health check endpoints, and a node status API. Use these to build dashboards, configure alerts, and verify that your cluster is operating correctly.
+
+## Prometheus metrics
+
+Weaviate exposes metrics in Prometheus text format. By default the metrics server runs on port `8081`.
+
+```bash
+GET /metrics
+```
+
+Enable the metrics endpoint and configure the port:
+
+```bash
+PROMETHEUS_MONITORING_ENABLED=true
+PROMETHEUS_MONITORING_PORT=8081
+PROMETHEUS_MONITORING_GROUP_CLASSES=false
+```
+
+Setting `PROMETHEUS_MONITORING_GROUP_CLASSES=true` groups per-shard metrics under the class name, which reduces cardinality in large multi-tenant deployments.
+
+You can also configure a namespace prefix for all metrics:
+
+```bash
+PROMETHEUS_METRICS_NAMESPACE=my_weaviate
+```
+
+### Scrape configuration
+
+<CodeGroup>
+
+```yaml prometheus.yml
+scrape_configs:
+  - job_name: weaviate
+    static_configs:
+      - targets:
+          - "weaviate:8081"
+    scrape_interval: 15s
+    metrics_path: /metrics
+```
+
+```yaml docker-compose.yml
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+```
+
+</CodeGroup>
+
+## Key metrics
+
+<AccordionGroup>
+  <Accordion title="Batch and object operations">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `batch_durations_ms` | Histogram | Duration in milliseconds of a single batch import operation. Labels: `class_name`, `operation`, `shard_name`. |
+    | `batch_objects_processed_total` | Counter | Total number of objects processed in batch operations. Labels: `class_name`, `shard_name`. |
+    | `batch_objects_processed_bytes` | Counter | Total bytes processed in batch operations. Labels: `class_name`, `shard_name`. |
+    | `object_count` | Gauge | Current number of objects per shard. Labels: `class_name`, `shard_name`. |
+
+    Use `batch_durations_ms` to track import throughput and identify slow shards.
+  </Accordion>
+
+  <Accordion title="Query operations">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `queries_durations_ms` | Histogram | Query duration in milliseconds. Labels: `class_name`, `query_type`. |
+    | `concurrent_queries_count` | Gauge | Number of concurrently running queries. Labels: `class_name`, `query_type`. |
+    | `requests_total` | Gauge | Total number of API requests. Labels: `api`, `class_name`, `query_type`, `status`. |
+    | `query_dimensions_total` | Counter | Vector dimensions consumed by read queries. Labels: `class_name`, `operation`, `query_type`. |
+    | `queries_filtered_vector_durations_ms` | Summary | Duration of filtered vector queries. Labels: `class_name`, `shard_name`, `operation`. |
+
+    `queries_durations_ms` is also used for alerting on query latency degradation.
+  </Accordion>
+
+  <Accordion title="Vector index metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `vector_index_size` | Gauge | Size of the HNSW vector index (may be larger than object count due to pre-allocation). Labels: `class_name`, `shard_name`. |
+    | `vector_dimensions_sum` | Gauge | Total number of dimensions stored in a shard. Labels: `class_name`, `shard_name`. |
+    | `vector_segments_sum` | Gauge | Total number of quantization segments (when PQ/SQ is enabled). Labels: `class_name`, `shard_name`. |
+    | `vector_index_tombstones` | Gauge | Active tombstones pending cleanup. Labels: `class_name`, `shard_name`. |
+    | `vector_index_tombstone_cleaned` | Counter | Total tombstones cleaned up. Labels: `class_name`, `shard_name`. |
+    | `vector_index_operations` | Gauge | Total mutating operations (insert, delete) on the index. Labels: `class_name`, `operation`, `shard_name`. |
+    | `vector_index_durations_ms` | Summary | Duration of vector index insert and delete operations. Labels: `class_name`, `operation`, `shard_name`, `step`. |
+    | `queue_size` | Gauge | Number of records pending async indexing. Labels: `class_name`, `shard_name`. |
+
+    High `vector_index_tombstones` values indicate that tombstone cleanup is lagging behind delete operations.
+  </Accordion>
+
+  <Accordion title="LSM storage metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `lsm_active_segments` | Gauge | Number of active LSM segments per shard. Labels: `class_name`, `shard_name`, `strategy`, `path`. |
+    | `lsm_memtable_size` | Gauge | Current memtable size in bytes. Labels: `class_name`, `shard_name`, `strategy`, `path`. |
+    | `async_operations_running` | Gauge | Number of ongoing async operations (e.g. compaction). Labels: `class_name`, `operation`, `shard_name`, `path`. |
+
+    A consistently growing `lsm_active_segments` count may indicate that compaction is not keeping up with write volume.
+  </Accordion>
+
+  <Accordion title="Replication metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `weaviate_replication_pending_operations` | Gauge | Replication operations waiting to be processed. Labels: `node`. |
+    | `weaviate_replication_ongoing_operations` | Gauge | Replication operations currently in progress. Labels: `node`. |
+    | `weaviate_replication_complete_operations` | Counter | Successfully completed replication operations. Labels: `node`. |
+    | `weaviate_replication_failed_operations` | Counter | Failed replication operations. Labels: `node`. |
+    | `weaviate_replication_engine_running_status` | Gauge | Whether the replication engine is running (`1`) or stopped (`0`). Labels: `node`. |
+
+    Alert on `weaviate_replication_failed_operations` increasing faster than `weaviate_replication_complete_operations`.
+  </Accordion>
+
+  <Accordion title="HTTP and gRPC server metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `http_request_duration_seconds` | Histogram | Time spent serving HTTP requests. Labels: `method`, `route`, `status_code`. |
+    | `http_requests_inflight` | Gauge | Current number of in-flight HTTP requests. Labels: `method`, `route`. |
+    | `http_request_size_bytes` | Histogram | Size of incoming HTTP request bodies. Labels: `method`, `route`. |
+    | `http_response_size_bytes` | Histogram | Size of outgoing HTTP response bodies. Labels: `method`, `route`. |
+    | `grpc_server_request_duration_seconds` | Histogram | Time spent serving gRPC requests. Labels: `grpc_service`, `method`, `status`. |
+    | `grpc_server_requests_inflight` | Gauge | Current number of in-flight gRPC requests. Labels: `grpc_service`, `method`. |
+  </Accordion>
+
+  <Accordion title="Cluster and schema metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `weaviate_schema_collections` | Gauge | Number of collections registered on this node. Labels: `nodeID`. |
+    | `weaviate_schema_shards` | Gauge | Number of shards per node by status. Labels: `nodeID`, `status`. |
+    | `weaviate_cluster_store_raft_last_applied_index` | Gauge | Current RAFT applied index on this node. Labels: `nodeID`. |
+    | `weaviate_cluster_store_fsm_apply_duration_seconds` | Histogram | Time to apply RAFT FSM state changes. Labels: `nodeID`. |
+    | `weaviate_index_shards_total` | Gauge | Total shards per status across the cluster. Labels: `status`. |
+    | `database_shards_loading` | Gauge | Number of shards currently loading (relevant during cold starts). |
+  </Accordion>
+</AccordionGroup>
+
+## Health check endpoints
+
+Use these endpoints in load balancer health probes and readiness gates.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/.well-known/live` | `GET` | Liveness check. Returns `200` when Weaviate is running. |
+| `/v1/.well-known/ready` | `GET` | Readiness check. Returns `200` when Weaviate has completed startup and is ready to serve traffic. Returns `503` during startup or when the node is not ready. |
+
+```bash
+# Liveness check
+curl -f http://localhost:8080/v1/.well-known/live
+
+# Readiness check
+curl -f http://localhost:8080/v1/.well-known/ready
+```
+
+## Node status
+
+Retrieve the status, shard counts, and version for all nodes in your cluster:
+
+```bash
+GET /v1/nodes
+```
+
+```bash
+curl http://localhost:8080/v1/nodes \
+  -H "Authorization: Bearer <key>"
+```
+
+Example response:
+
+```json
+{
+  "nodes": [
+    {
+      "name": "weaviate-0",
+      "status": "HEALTHY",
+      "version": "1.36.0",
+      "gitHash": "abc1234",
+      "stats": {
+        "shardCount": 4,
+        "objectCount": 120000
+      },
+      "shards": [
+        {
+          "name": "shard-abcd",
+          "class": "Article",
+          "objectCount": 60000,
+          "vectorIndexingQueue": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+Pass `?output=verbose` to include per-shard details. The `verbosity` parameter is also subject to RBAC: reading verbose node info requires the `read_nodes` permission.
+
+## Setting up Grafana
+
+Import the community Weaviate dashboard from Grafana's dashboard library, or build your own using the metrics above.
+
+Key panels to include:
+
+- **Import throughput**: rate of `batch_durations_ms` completions
+- **Query latency P99**: 99th percentile of `queries_durations_ms`
+- **Object count by collection**: `object_count` grouped by `class_name`
+- **Vector index queue depth**: `queue_size` — a growing value indicates the async indexer is falling behind
+- **Replication health**: `weaviate_replication_failed_operations` rate
+- **RAFT applied index lag**: difference between `weaviate_cluster_store_raft_last_applied_index` values across nodes

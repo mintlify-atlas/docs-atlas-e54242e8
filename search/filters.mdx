@@ -1,0 +1,296 @@
+---
+title: 'Filtering'
+description: 'Narrow search results by property values, cross-references, or object IDs before vector scoring.'
+keywords: ['filters', 'where filter', 'pre-filter', 'property filter', 'boolean filter', 'metadata filter']
+---
+
+Filters are pre-conditions applied to the object index before any scoring (vector, BM25, or hybrid) takes place. Only objects that satisfy the filter are considered as candidates. This makes filters efficient for narrowing large collections before expensive ranking operations.
+
+## Filter syntax (Python client)
+
+Use `Filter.by_property(name)` chained with an operator method.
+
+```python python
+from weaviate.classes.query import Filter
+
+# Single filter
+results = collection.query.near_text(
+    query="AI research",
+    filters=Filter.by_property("year").equal(2024),
+    limit=10,
+)
+```
+
+## Filter operators
+
+<AccordionGroup>
+  <Accordion title="Equal / NotEqual">
+
+Match objects where a property exactly equals (or does not equal) a value.
+
+```python python
+# Equal
+Filter.by_property("status").equal("published")
+
+# NotEqual
+Filter.by_property("status").not_equal("draft")
+```
+
+Applies to: `text`, `int`, `number`, `boolean`, `date`.
+
+  </Accordion>
+  <Accordion title="GreaterThan / LessThan / GreaterThanEqual / LessThanEqual">
+
+Numeric and date range comparisons.
+
+```python python
+# Greater than
+Filter.by_property("price").greater_than(100)
+
+# Less than
+Filter.by_property("price").less_than(500)
+
+# Greater than or equal
+Filter.by_property("rating").greater_than_equal(4.0)
+
+# Less than or equal
+Filter.by_property("year").less_than_equal(2023)
+```
+
+Applies to: `int`, `number`, `date`.
+
+  </Accordion>
+  <Accordion title="Like">
+
+Pattern matching with wildcard support. Use `*` to match any sequence of characters and `?` to match any single character.
+
+```python python
+# Match any title starting with "Deep"
+Filter.by_property("title").like("Deep*")
+
+# Match any title ending with "Learning"
+Filter.by_property("title").like("*Learning")
+```
+
+Applies to: `text` properties only.
+
+<Warning>
+`Like` does not use the inverted index; it performs a linear scan. Avoid it on large, unfiltered collections.
+</Warning>
+
+  </Accordion>
+  <Accordion title="IsNull">
+
+Match objects where a property has no stored value (`true`) or does have a value (`false`).
+
+```python python
+# Objects missing the "publishedAt" property
+Filter.by_property("publishedAt").is_none(True)
+
+# Objects that have a "publishedAt" value
+Filter.by_property("publishedAt").is_none(False)
+```
+
+<Note>
+Null filtering requires the property's `index_null_state` setting to be `true` in the collection schema.
+</Note>
+
+  </Accordion>
+  <Accordion title="ContainsAny / ContainsAll">
+
+Match objects where an array property contains at least one (any) or all of the supplied values.
+
+```python python
+# At least one of the tags matches
+Filter.by_property("tags").contains_any(["machine-learning", "nlp"])
+
+# All of the tags must be present
+Filter.by_property("tags").contains_all(["python", "tutorial"])
+```
+
+Applies to: `text[]`, `int[]`, `number[]` array properties.
+
+  </Accordion>
+</AccordionGroup>
+
+## Combining filters
+
+Use `&` (AND) and `|` (OR) to compose multiple conditions.
+
+```python python
+from weaviate.classes.query import Filter
+
+# AND: both conditions must be true
+results = collection.query.near_text(
+    query="climate change",
+    filters=(
+        Filter.by_property("year").greater_than_equal(2020)
+        & Filter.by_property("category").equal("environment")
+    ),
+    limit=10,
+)
+
+# OR: either condition must be true
+results = collection.query.bm25(
+    query="renewable energy",
+    filters=(
+        Filter.by_property("category").equal("energy")
+        | Filter.by_property("category").equal("technology")
+    ),
+    limit=10,
+)
+
+# Nested AND/OR
+results = collection.query.near_text(
+    query="battery storage",
+    filters=(
+        Filter.by_property("year").greater_than(2019)
+        & (
+            Filter.by_property("category").equal("energy")
+            | Filter.by_property("category").equal("manufacturing")
+        )
+    ),
+    limit=10,
+)
+```
+
+## Filtering by object ID
+
+Use `Filter.by_id()` to match specific objects by their UUID.
+
+```python python
+Filter.by_id().equal("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+# Exclude a known object (useful with near_object)
+Filter.by_id().not_equal("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+```
+
+## Filtering by cross-reference
+
+Use `Filter.by_ref()` to filter objects based on properties of a linked (cross-referenced) object.
+
+```python python
+# Filter Articles where the linked Author has nationality "German"
+Filter.by_ref("hasAuthor").by_property("nationality").equal("German")
+```
+
+In GraphQL, reference paths use array notation:
+
+```graphql graphql
+where: {
+  path: ["hasAuthor", "Author", "nationality"]
+  operator: Equal
+  valueText: "German"
+}
+```
+
+## Filtering by creation or update time
+
+Use internal property names to filter on system timestamps.
+
+```python python
+import datetime
+
+# Objects created after a specific date
+Filter.by_creation_time().greater_than(datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc))
+
+# Objects updated in the last week
+Filter.by_update_time().greater_than(datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc))
+```
+
+## Full filter example
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+from weaviate.classes.query import Filter
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+results = collection.query.hybrid(
+    query="large language models",
+    alpha=0.6,
+    filters=(
+        Filter.by_property("year").greater_than_equal(2022)
+        & Filter.by_property("tags").contains_any(["NLP", "transformers"])
+    ),
+    limit=10,
+    return_metadata=wvc.query.MetadataQuery(score=True),
+)
+
+for obj in results.objects:
+    print(obj.properties["title"], obj.metadata.score)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: { query: \"large language models\", alpha: 0.6 }
+          where: {
+            operator: And
+            operands: [
+              { path: [\"year\"], operator: GreaterThanEqual, valueInt: 2022 },
+              { path: [\"tags\"], operator: ContainsAny, valueTextArray: [\"NLP\", \"transformers\"] }
+            ]
+          }
+          limit: 10
+        ) {
+          title
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## Filterable vs searchable index
+
+Each text property has two independent index flags:
+
+| Flag | Purpose |
+|---|---|
+| `index_filterable` | Enables `Equal`, `NotEqual`, `Like`, `ContainsAny`, `ContainsAll`, and other value operators |
+| `index_searchable` | Enables BM25 and hybrid keyword scoring |
+
+Both are `true` by default for `text` properties. Disable either to reduce storage and indexing overhead for properties that do not need that capability.
+
+```python python
+wvc.config.Property(
+    name="body",
+    data_type=wvc.config.DataType.TEXT,
+    index_filterable=False,  # no exact-match filtering
+    index_searchable=True,   # still indexed for BM25
+)
+```
+
+<Warning>
+If `index_filterable=False`, you cannot use value-based filter operators on that property. Attempting to do so returns an error.
+</Warning>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Vector search" icon="magnifying-glass" href="/search/vector-search">
+    Semantic similarity search with near_text, near_vector, and more.
+  </Card>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    BM25 and vector search combined.
+  </Card>
+  <Card title="Keyword search (BM25)" icon="font" href="/search/keyword-search">
+    Full-text search with BM25 scoring.
+  </Card>
+  <Card title="Data schema" icon="table" href="/data/schema">
+    Configure index settings for properties in your collection schema.
+  </Card>
+</CardGroup>

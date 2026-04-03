@@ -1,0 +1,204 @@
+---
+title: "Replication & Scaling"
+description: "Configure replication, consistency levels, and horizontal scaling for production Weaviate clusters."
+keywords: ["replication", "high availability", "scaling", "consistency", "RAFT", "sharding"]
+---
+
+Weaviate supports multi-node replication to provide high availability and read scalability. When replication is enabled, each shard is stored on multiple nodes. Reads can be served from any replica, and writes are coordinated across the required number of replicas before returning to the client.
+
+<Note>
+  Replication requires a cluster with multiple nodes. A single-node Weaviate instance cannot replicate data. Use the [Docker Compose](/deployment/docker) or [Kubernetes](/deployment/kubernetes) guides to deploy a multi-node cluster.
+</Note>
+
+## Replication factor
+
+The replication factor controls how many copies of each shard are stored across the cluster. A factor of `3` means each shard has three copies — one primary and two replicas.
+
+Higher replication factors increase fault tolerance and read throughput, but require more storage and nodes.
+
+### Minimum factor
+
+You can enforce a cluster-wide minimum replication factor to prevent collections from being created with too few replicas:
+
+```bash
+REPLICATION_MINIMUM_FACTOR=3
+```
+
+Weaviate rejects any collection creation or update that specifies a factor below this value.
+
+## Configuring replication on a collection
+
+<Tabs>
+  <Tab title="Collection creation">
+    Set the `replicationConfig.factor` when creating a collection:
+
+    ```python
+    import weaviate
+    from weaviate.classes.config import Configure
+
+    client = weaviate.connect_to_local()
+    client.collections.create(
+        name="Article",
+        replication_config=Configure.Replication(
+            factor=3,
+            async_enabled=True,
+        ),
+    )
+    ```
+
+    ```bash
+    curl -X POST http://localhost:8080/v1/schema \
+      -H "Content-Type: application/json" \
+      -d '{
+        "class": "Article",
+        "replicationConfig": {
+          "factor": 3,
+          "asyncEnabled": true
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="Updating an existing collection">
+    You can change the replication factor on an existing collection. Weaviate validates that the new factor does not exceed the number of available nodes:
+
+    ```python
+    client.collections.get("Article").config.update(
+        replication_config=Configure.Replication(factor=5)
+    )
+    ```
+
+    ```bash
+    curl -X PUT http://localhost:8080/v1/schema/Article \
+      -H "Content-Type: application/json" \
+      -d '{
+        "class": "Article",
+        "replicationConfig": {
+          "factor": 5
+        }
+      }'
+    ```
+
+    <Note>
+      Weaviate returns an error if the requested factor exceeds the node count. For example: `cannot scale to 5 replicas, cluster has only 3 nodes`.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Consistency levels
+
+Consistency levels let you trade off between data freshness and latency on a per-request basis.
+
+| Level | Description |
+|---|---|
+| `ONE` | The operation succeeds when at least one replica responds. Lowest latency, weakest consistency. |
+| `QUORUM` | The operation succeeds when the majority of replicas respond (`factor / 2 + 1`). Balanced default. |
+| `ALL` | The operation succeeds only when all replicas respond. Strongest consistency, highest latency. |
+
+<Tabs>
+  <Tab title="Read consistency">
+    Pass a `consistency_level` parameter to read queries:
+
+    ```python
+    from weaviate.classes.query import ConsistencyLevel
+
+    articles = client.collections.get("Article")
+    result = articles.query.fetch_object_by_id(
+        uuid="...",
+        consistency_level=ConsistencyLevel.QUORUM,
+    )
+    ```
+
+    ```bash
+    curl "http://localhost:8080/v1/objects/Article/<uuid>?consistency_level=QUORUM" \
+      -H "Authorization: Bearer <key>"
+    ```
+  </Tab>
+  <Tab title="Write consistency">
+    Pass a `consistency_level` parameter to write operations:
+
+    ```python
+    from weaviate.classes.data import ConsistencyLevel
+
+    articles = client.collections.get("Article")
+    articles.data.insert(
+        properties={"title": "Hello world"},
+        consistency_level=ConsistencyLevel.ALL,
+    )
+    ```
+
+    ```bash
+    curl -X POST "http://localhost:8080/v1/objects?consistency_level=ALL" \
+      -H "Authorization: Bearer <key>" \
+      -H "Content-Type: application/json" \
+      -d '{"class": "Article", "properties": {"title": "Hello world"}}'
+    ```
+  </Tab>
+</Tabs>
+
+## Async replication
+
+Async replication allows writes to complete without waiting for all replicas to acknowledge. Replicas synchronize in the background, providing eventual consistency. This reduces write latency at the cost of a window where replicas may diverge.
+
+Enable async replication per collection:
+
+```json
+{
+  "class": "Article",
+  "replicationConfig": {
+    "factor": 3,
+    "asyncEnabled": true
+  }
+}
+```
+
+When `asyncEnabled` is `true`, writes use `ONE` consistency by default internally, and background repair processes reconcile divergent replicas using a hash-tree based diff algorithm.
+
+## Shard distribution across nodes
+
+Weaviate distributes shards across nodes automatically. When you add a collection with multiple shards, each shard is placed on a different node where possible. The number of shards per collection is set at creation time:
+
+```python
+from weaviate.classes.config import Configure
+
+client.collections.create(
+    name="Article",
+    sharding_config=Configure.Sharding(
+        virtual_per_physical=128,
+        desired_count=3,  # number of physical shards
+    ),
+    replication_config=Configure.Replication(factor=3),
+)
+```
+
+## Horizontal scaling: adding nodes
+
+To scale out, add new nodes to the cluster. Weaviate uses RAFT consensus to manage schema changes cluster-wide — the schema leader coordinates all schema mutations and propagates them to followers.
+
+Once new nodes join, you can increase the replication factor or create new collections whose shards will be distributed across the larger node pool.
+
+<Note>
+  RAFT-based schema management ensures schema consistency across all nodes. All schema writes go through the cluster leader, which provides linearizable schema mutations even during partial network partitions.
+</Note>
+
+## Deletion strategies
+
+When an object is deleted on one replica but hasn't propagated everywhere, later reads may resurrect it from a stale replica. Configure a deletion strategy per collection to control this behavior:
+
+| Strategy | Description |
+|---|---|
+| `DeleteOnConflict` | The deleted version always wins. Objects are permanently removed after reconciliation. |
+| `TimeBasedResolution` | The most recently written version wins, based on update timestamps. |
+| `NoAutomatedResolution` | Conflicts are not resolved automatically; manual intervention may be required. |
+
+```bash
+curl -X POST http://localhost:8080/v1/schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "Article",
+    "replicationConfig": {
+      "factor": 3,
+      "asyncEnabled": true,
+      "deletionStrategy": "DeleteOnConflict"
+    }
+  }'
+```

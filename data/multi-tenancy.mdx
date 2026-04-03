@@ -1,0 +1,250 @@
+---
+title: 'Multi-tenancy'
+description: 'Isolate data per tenant within a single Weaviate collection, with independent tenant lifecycle management and storage offloading.'
+keywords: ['multi-tenancy', 'tenant', 'isolation', 'active', 'inactive', 'offloaded', 'saas']
+---
+
+Multi-tenancy allows a single Weaviate collection to store data for many independent tenants with complete data isolation. Each tenant gets its own shard, so objects in one tenant are never visible to queries in another.
+
+<Note>
+Multi-tenancy is configured per collection. A single Weaviate instance can have some collections with multi-tenancy enabled and others without. You cannot enable or disable multi-tenancy on a collection after it is created.
+</Note>
+
+## Enabling multi-tenancy
+
+Set `multi_tenancy_config` when creating the collection. The `enabled` flag cannot be changed after creation.
+
+```python
+import weaviate
+import weaviate.classes.config as wc
+
+client = weaviate.connect_to_local()
+
+client.collections.create(
+    name="Document",
+    multi_tenancy_config=wc.Configure.multi_tenancy(enabled=True),
+    properties=[
+        wc.Property(name="title", data_type=wc.DataType.TEXT),
+        wc.Property(name="content", data_type=wc.DataType.TEXT),
+    ],
+)
+```
+
+## Tenant states
+
+Every tenant has an `activityStatus` that determines whether its data is queryable and where it is stored.
+
+<CardGroup cols={3}>
+  <Card title="ACTIVE" icon="circle-check">
+    The tenant is fully operational. Data lives on local, hot storage and responds to queries immediately.
+  </Card>
+  <Card title="INACTIVE" icon="circle-pause">
+    The tenant is not queryable. Data stays on local disk but is not loaded into memory. Activate to query.
+  </Card>
+  <Card title="OFFLOADED" icon="cloud">
+    The tenant is inactive and its data is moved to a remote cloud storage backend. Cheapest storage option for rarely accessed tenants. Available from v1.26+.
+  </Card>
+</CardGroup>
+
+**Transition states** (server-managed, read-only):
+
+- `OFFLOADING` — data is being moved to remote storage.
+- `ONLOADING` — data is being loaded back from remote storage.
+
+**Deprecated aliases** (still accepted for backward compatibility):
+
+| Old name | Current name |
+|----------|--------------|
+| `HOT` | `ACTIVE` |
+| `COLD` | `INACTIVE` |
+| `FROZEN` | `OFFLOADED` |
+| `FREEZING` | `OFFLOADING` |
+| `UNFREEZING` | `ONLOADING` |
+
+## Creating tenants
+
+Tenants are created separately after the collection exists. You can create multiple tenants in a single call.
+
+```python
+from weaviate.classes.tenants import Tenant
+
+documents = client.collections.get("Document")
+
+# Create one tenant (defaults to ACTIVE)
+documents.tenants.create([
+    Tenant(name="tenant-acme"),
+])
+
+# Create multiple tenants with explicit initial state
+documents.tenants.create([
+    Tenant(name="tenant-acme", activity_status=wc.TenantActivityStatus.ACTIVE),
+    Tenant(name="tenant-globex", activity_status=wc.TenantActivityStatus.INACTIVE),
+    Tenant(name="tenant-initech", activity_status=wc.TenantActivityStatus.ACTIVE),
+])
+```
+
+<Note>
+When creating a tenant, only `ACTIVE` and `INACTIVE` are valid initial states. `OFFLOADED` is only available when updating an existing tenant.
+</Note>
+
+## CRUD with a tenant context
+
+All object operations in a multi-tenancy collection require specifying a tenant. Omitting the tenant raises an error.
+
+### Insert an object
+
+```python
+tenant_docs = documents.with_tenant("tenant-acme")
+
+uuid = tenant_docs.data.insert(
+    properties={
+        "title": "Acme Q4 Report",
+        "content": "Revenue grew 18% year-over-year...",
+    }
+)
+```
+
+### Batch insert
+
+```python
+from weaviate.classes.data import DataObject
+
+objects = [
+    DataObject(properties={"title": f"Doc {i}", "content": "..."})
+    for i in range(500)
+]
+
+result = tenant_docs.data.insert_many(objects)
+
+if result.has_errors:
+    for idx, err in result.errors.items():
+        print(f"Failed at index {idx}: {err.message}")
+```
+
+### Query objects
+
+```python
+response = tenant_docs.query.bm25(
+    query="quarterly revenue",
+    limit=10,
+)
+
+for obj in response.objects:
+    print(obj.properties["title"])
+```
+
+### Get object by ID
+
+```python
+obj = tenant_docs.query.fetch_object_by_id(
+    uuid="110e8400-e29b-41d4-a716-446655440000"
+)
+```
+
+### Update an object
+
+```python
+tenant_docs.data.update(
+    uuid="110e8400-e29b-41d4-a716-446655440000",
+    properties={"content": "Updated content..."},
+)
+```
+
+### Delete an object
+
+```python
+tenant_docs.data.delete_by_id(
+    uuid="110e8400-e29b-41d4-a716-446655440000"
+)
+```
+
+## Managing tenants
+
+### List all tenants
+
+```python
+tenants = documents.tenants.get()
+
+for tenant in tenants.values():
+    print(tenant.name, tenant.activity_status)
+```
+
+### Get a specific tenant
+
+```python
+tenant = documents.tenants.get_by_names(["tenant-acme"])
+print(tenant["tenant-acme"].activity_status)
+```
+
+### Activate a tenant
+
+Move a tenant from `INACTIVE` or `OFFLOADED` back to `ACTIVE`. Weaviate loads the shard into memory before returning.
+
+```python
+from weaviate.classes.tenants import Tenant
+
+documents.tenants.update([
+    Tenant(
+        name="tenant-globex",
+        activity_status=wc.TenantActivityStatus.ACTIVE,
+    )
+])
+```
+
+### Deactivate a tenant
+
+Move a tenant to `INACTIVE` to free memory while keeping data on local disk.
+
+```python
+documents.tenants.update([
+    Tenant(
+        name="tenant-acme",
+        activity_status=wc.TenantActivityStatus.INACTIVE,
+    )
+])
+```
+
+### Offload a tenant
+
+Move a tenant to `OFFLOADED` to transfer its data to remote cloud storage. Requires a backup provider module to be configured (e.g., `backup-s3`, `backup-gcs`, or `backup-azure`).
+
+```python
+documents.tenants.update([
+    Tenant(
+        name="tenant-initech",
+        activity_status=wc.TenantActivityStatus.OFFLOADED,
+    )
+])
+```
+
+### Delete a tenant
+
+Permanently deletes all objects belonging to that tenant. This cannot be undone.
+
+```python
+documents.tenants.remove(["tenant-acme"])
+```
+
+## Performance considerations
+
+- **Memory**: Only `ACTIVE` tenants consume heap memory for their vector index. Inactive tenants have zero memory overhead.
+- **Query latency**: Queries against `INACTIVE` or `OFFLOADED` tenants return an error until the tenant is reactivated. Build activation logic into your application if you serve infrequently accessed tenants.
+- **Shard isolation**: Because each tenant has its own shard, compaction and vector index operations for one tenant do not block others.
+- **Offloading cost**: Transitioning to and from `OFFLOADED` involves I/O to the remote backend. For tenants accessed once a day or less, offloading provides significant storage cost savings.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Collections & schema" href="/data/schema" icon="table">
+    Enable multi-tenancy and define collection properties.
+  </Card>
+  <Card title="Managing objects" href="/data/manage-objects" icon="database">
+    Full CRUD reference for object operations.
+  </Card>
+  <Card title="Operations: backups" href="/modules/backup" icon="floppy-disk">
+    Configure a cloud backend required for tenant offloading.
+  </Card>
+  <Card title="REST API: schema" href="/api/rest-schema" icon="code">
+    Tenant management via the REST API.
+  </Card>
+</CardGroup>

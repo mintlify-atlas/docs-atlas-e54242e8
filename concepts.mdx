@@ -1,0 +1,299 @@
+---
+title: "Core concepts"
+description: "Key concepts behind Weaviate's vector database architecture: vector indexes, search types, modules, multi-tenancy, and distributed design."
+keywords: ["concepts", "vector database", "HNSW", "hybrid search", "BM25", "multi-tenancy", "modules", "architecture"]
+---
+
+This page explains the core ideas behind Weaviate. Understanding these concepts will help you design collections, choose the right index type, and build effective search queries.
+
+## Vector databases
+
+A **vector database** stores data as high-dimensional numerical arrays called vectors (or embeddings) alongside the original objects. Vectors encode semantic meaning: objects with similar meaning have vectors that are close together in the embedding space.
+
+Traditional databases match records by exact field values. Vector databases find records by **semantic similarity** — the nearest neighbors in the embedding space — regardless of exact wording.
+
+**Why they matter for AI applications:**
+
+- Language models, image models, and multimodal models all produce vector embeddings as output
+- Semantic search, recommendation, and RAG all require fast nearest-neighbor lookup over millions or billions of vectors
+- Combining vector similarity with structured filters enables precise retrieval that neither approach achieves alone
+
+Weaviate stores both the structured object (properties, metadata) and its vector in the same database, so you never need a separate key-value store to correlate IDs back to content.
+
+## Collections and objects
+
+A **collection** (also called a class) is the top-level container for objects of the same type. It is equivalent to a table in a relational database. Each collection has:
+
+- A **name** (must start with an uppercase letter, e.g. `Article`, `Product`)
+- **Properties** — typed fields on each object
+- A **vector index configuration** — which index type and compression settings to use
+- A **vectorizer** — the module that generates embeddings on import, or `none` if you supply your own
+- Optional **multi-tenancy**, **replication**, and **sharding** settings
+
+An **object** is a single record in a collection. It contains:
+- A UUID identifier (auto-generated or supplied)
+- Property values matching the collection's schema
+- One or more vectors
+
+### Data types
+
+Properties in Weaviate have explicit data types. The supported primitive types are:
+
+| Type | Description |
+|------|-------------|
+| `text` | UTF-8 string, tokenized for BM25 |
+| `text[]` | Array of strings |
+| `int` | 64-bit integer |
+| `int[]` | Array of integers |
+| `number` | 64-bit float |
+| `number[]` | Array of floats |
+| `boolean` | True/false |
+| `boolean[]` | Array of booleans |
+| `date` | RFC 3339 timestamp |
+| `date[]` | Array of timestamps |
+| `uuid` | UUID stored as raw bytes (compact) |
+| `uuid[]` | Array of UUIDs |
+| `blob` | Base64-encoded binary data |
+| `geoCoordinates` | Latitude/longitude pair |
+| `phoneNumber` | Parsed phone number |
+| `object` | Nested sub-object |
+| `object[]` | Array of nested sub-objects |
+
+Properties can also be **cross-references** — links to objects in other (or the same) collection. Cross-references are resolved at query time.
+
+### Property indexing
+
+Each property can be indexed independently:
+
+- `indexFilterable` — indexes the property for use in `where` filters (default: `true`)
+- `indexSearchable` — indexes the property for BM25 and hybrid search (default: `true`, text/text[] only)
+- `indexRangeFilters` — range-optimized index for numeric and date range filters (default: `false`)
+
+## Vector indexes
+
+Weaviate supports three vector index types. You set the index type when creating a collection via `vectorIndexType`.
+
+### HNSW
+
+**Hierarchical Navigable Small World (HNSW)** is the primary vector index. It builds a multi-layer proximity graph where each node connects to its nearest neighbors. Searches start at the top layer and descend, pruning the search space at each level.
+
+HNSW characteristics:
+- Sub-linear query time — searches over billions of vectors complete in milliseconds
+- Supports **Product Quantization (PQ)**, **Binary Quantization (BQ)**, and **Scalar Quantization (SQ)** compression to reduce memory usage
+- Supports **multi-vector** objects (e.g. ColBERT late-interaction models)
+- Write-heavy operations (deletions, updates) use tombstones, with background cleanup
+- Configurable `ef` (search beam width) and `efConstruction` (build-time beam width) parameters
+
+HNSW is the default for most production workloads. See [Data / Compression](/data/compression) for quantization details.
+
+### Flat
+
+The **flat index** performs brute-force search over all vectors. Every query computes the distance to every stored vector.
+
+Flat index characteristics:
+- No build phase — objects are inserted directly with no indexing overhead
+- Exact results — no approximation error
+- Query time scales linearly with dataset size
+- Best suited for small collections (typically under 10,000 objects)
+
+Use the flat index when you need exact results and your dataset is small enough that linear scan is acceptable.
+
+### Dynamic
+
+The **dynamic index** starts as a flat index and automatically switches to HNSW when the collection grows beyond a configurable threshold.
+
+Dynamic index requirements:
+- Async indexing must be enabled
+- The switch from flat to HNSW happens in the background without downtime
+- Distance metric is immutable after creation
+
+The dynamic index is useful when you want to prototype with small datasets and graduate to HNSW automatically as your data scales.
+
+<Note>
+  The dynamic index requires async indexing to be enabled. It is best suited for collections where data volume is initially uncertain.
+</Note>
+
+## Search types
+
+Weaviate supports three complementary search modes, which can be combined in a single query.
+
+### Vector search (`near_text` / `near_vector`)
+
+Vector search finds the objects whose vectors are closest to a query vector in the embedding space. There are two query forms:
+
+- **`near_text`** — Weaviate vectorizes the query string using the collection's configured vectorizer and searches by the resulting vector
+- **`near_vector`** — You supply a raw vector directly, bypassing the vectorizer
+
+```python
+# near_text: vectorize the query automatically
+results = articles.query.near_text(query="climate change impacts", limit=5)
+
+# near_vector: supply a pre-computed vector
+results = articles.query.near_vector(near_vector=[0.1, 0.2, ...], limit=5)
+```
+
+Vector search uses the HNSW (or flat/dynamic) index and returns approximate nearest neighbors ranked by distance.
+
+### BM25 keyword search
+
+**BM25** (Best Match 25) is a probabilistic keyword ranking algorithm. It scores documents by term frequency and inverse document frequency, with length normalization.
+
+```python
+results = articles.query.bm25(query="vector database performance", limit=5)
+```
+
+BM25 uses the inverted index built from `indexSearchable` properties. It is purely lexical — it finds documents containing the query terms, weighted by relevance.
+
+### Hybrid search
+
+**Hybrid search** combines vector search and BM25 in a single query, merging the result sets using Reciprocal Rank Fusion (RRF) or a relative score.
+
+The `alpha` parameter controls the balance:
+- `alpha=1.0` — pure vector search
+- `alpha=0.0` — pure BM25
+- `alpha=0.5` — equal weight (default)
+
+```python
+results = articles.query.hybrid(
+    query="semantic search performance",
+    alpha=0.75,   # weight toward vector search
+    limit=5,
+)
+```
+
+Hybrid search is often the best default choice. It captures semantic meaning from the vector component and precise term matches from BM25.
+
+### Filters
+
+All three search types support structured `where` filters to narrow results before or after vector/BM25 scoring. Filters operate on `indexFilterable` properties and are evaluated using the inverted index — they do not require a full scan.
+
+See [Search / Filters](/search/filters) for the full filter syntax.
+
+## Modules
+
+Weaviate's module system extends core functionality through a plugin interface. Modules are enabled at startup via `ENABLE_MODULES` and register HTTP handlers with the Weaviate API. There are approximately 67 modules across four categories.
+
+### Vectorizers
+
+Vectorizer modules generate embeddings from objects at import time. Each collection specifies which vectorizer to use via the `vectorizer` field.
+
+Examples: `text2vec-openai`, `text2vec-cohere`, `text2vec-huggingface`, `text2vec-model2vec`, `multi2vec-clip`, `multi2vec-bind`, `text2vec-google`
+
+When no vectorizer is configured (`none`), you must supply vectors directly with each object.
+
+### Generative modules
+
+Generative modules enable retrieval-augmented generation (RAG). They pass retrieved objects to an LLM and return the generated response alongside the search results.
+
+Examples: `generative-openai`, `generative-cohere`, `generative-anthropic`, `generative-google`, `generative-ollama`
+
+```python
+results = articles.generate.near_text(
+    query="vector databases",
+    single_prompt="Summarize this article: {content}",
+    limit=3,
+)
+```
+
+### Reranker modules
+
+Reranker modules re-score the initial search results using a cross-encoder model, which considers the query and document together for higher relevance precision.
+
+Examples: `reranker-cohere`, `reranker-jinaai`, `reranker-voyageai`, `reranker-transformers`
+
+### Backup modules
+
+Backup modules integrate with cloud storage providers to trigger and restore backups.
+
+Examples: `backup-s3`, `backup-gcs`, `backup-azure`, `backup-filesystem`
+
+See [Modules / Vectorizers](/modules/vectorizers), [Modules / Generative](/modules/generative), and [Modules / Rerankers](/modules/rerankers) for configuration details.
+
+## Multi-tenancy
+
+Multi-tenancy lets a single Weaviate collection serve multiple isolated tenants — useful for SaaS applications where each customer's data must be strictly separated.
+
+When multi-tenancy is enabled on a collection:
+- Each tenant gets its own **shard** (independent LSM store and vector index)
+- Data from different tenants never mixes in the same shard
+- Tenants can be independently activated (`HOT`) or deactivated (`COLD`/`FROZEN`) to control memory and storage usage
+- RBAC rules can be scoped per tenant
+
+**Auto-tenant creation** (`AutoTenantCreation`) automatically creates a tenant shard on first access, eliminating the need to pre-create tenants.
+
+**Auto-tenant activation** (`AutoTenantActivation`) automatically brings a cold tenant back to active state when it receives a query.
+
+See [Data / Multi-tenancy](/data/multi-tenancy) for setup and management.
+
+## Distributed architecture
+
+### Sharding
+
+A collection is divided into **shards**. Each shard is assigned to a node using consistent hashing. Sharding config per collection controls:
+- `DesiredCount` — number of physical shards
+- `VirtualPerPhysical` — virtual shard slots per physical shard (for rebalancing)
+
+### Replication
+
+Weaviate supports configurable **replication factor** per collection. With a replication factor of `N`, each shard has `N` copies on different nodes. Reads and writes are tunable for consistency vs. availability tradeoffs.
+
+### RAFT consensus
+
+Schema changes and cluster membership are coordinated through **RAFT consensus**. All nodes agree on schema state before changes take effect, preventing split-brain inconsistencies. RAFT is implemented in the `cluster/` package.
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="Do I need to define a schema before inserting data?">
+    Yes. You must create a collection with defined properties before inserting objects. Weaviate does not support schemaless insertion. However, you can add new properties to an existing collection at any time.
+  </Accordion>
+
+  <Accordion title="Can I bring my own vectors instead of using a vectorizer?">
+    Yes. Set `vector_config=Configure.Vectors.self_provided()` (Python) or set `vectorizer: none` in the collection config. You then supply a vector with each inserted object. This works with all three index types (HNSW, flat, dynamic).
+  </Accordion>
+
+  <Accordion title="What is the difference between HNSW and flat indexes?">
+    HNSW is an approximate nearest-neighbor index — it returns results very quickly but may occasionally miss the true nearest neighbor. The flat index is exact brute-force — it always returns the true nearest neighbor, but query time grows linearly with dataset size. For most production workloads with more than a few thousand objects, HNSW is the correct choice.
+  </Accordion>
+
+  <Accordion title="What distance metrics are supported?">
+    Weaviate supports cosine similarity, dot product, L2 (Euclidean), Hamming, and Manhattan distances. The distance metric is set per collection and is immutable after creation.
+  </Accordion>
+
+  <Accordion title="How does hybrid search work internally?">
+    Hybrid search runs both a vector ANN search and a BM25 keyword search independently, then merges the two result sets using Reciprocal Rank Fusion (RRF). The `alpha` parameter adjusts how much weight the vector score receives relative to the BM25 score.
+  </Accordion>
+
+  <Accordion title="Can I use multiple vectors per object?">
+    Yes. Weaviate supports named vectors — you can store multiple independently generated vectors on the same object (e.g. one for title, one for body). HNSW supports multi-vector objects for late-interaction models like ColBERT.
+  </Accordion>
+</AccordionGroup>
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Vector search" icon="vector-square" href="/search/vector-search">
+    Configure and run `near_text` and `near_vector` queries.
+  </Card>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Combine BM25 and vector search with the `alpha` parameter.
+  </Card>
+  <Card title="Data & schema" icon="table" href="/data/schema">
+    Define collections, properties, and vector index configuration.
+  </Card>
+  <Card title="Multi-tenancy" icon="building" href="/data/multi-tenancy">
+    Isolate data per tenant with auto-creation and lifecycle management.
+  </Card>
+  <Card title="Vectorizer modules" icon="plug" href="/modules/vectorizers">
+    Integrate OpenAI, Cohere, HuggingFace, and other embedding providers.
+  </Card>
+  <Card title="Generative RAG" icon="robot" href="/search/generative-rag">
+    Run RAG queries using built-in generative modules.
+  </Card>
+  <Card title="Replication" icon="server" href="/operations/replication">
+    Configure replication factor and consistency settings.
+  </Card>
+  <Card title="Compression" icon="compress" href="/data/compression">
+    Reduce memory with PQ, BQ, and SQ vector quantization.
+  </Card>
+</CardGroup>

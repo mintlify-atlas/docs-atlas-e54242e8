@@ -1,0 +1,469 @@
+---
+title: "Schema API"
+description: "Create and manage Weaviate collections (classes) including properties, vectorizer config, and index settings."
+keywords: ["schema", "collections", "classes", "REST", "Weaviate"]
+---
+
+The Schema API manages the structure of your Weaviate instance: creating collections, configuring vectorizers and indexes, adding properties, and deleting collections along with all their data.
+
+All paths are relative to `http://localhost:8080/v1`.
+
+<Warning>
+  Deleting a collection permanently removes the collection definition and **all objects** stored in it. This action cannot be undone.
+</Warning>
+
+## Collection schema example
+
+The following is a complete collection definition with common configuration options:
+
+```json
+{
+  "class": "Article",
+  "description": "A news or blog article with a title and body.",
+  "vectorizer": "text2vec-openai",
+  "vectorIndexType": "hnsw",
+  "vectorIndexConfig": {
+    "distance": "cosine",
+    "ef": 64,
+    "efConstruction": 128,
+    "maxConnections": 16
+  },
+  "moduleConfig": {
+    "text2vec-openai": {
+      "model": "text-embedding-3-small",
+      "dimensions": 1536
+    }
+  },
+  "properties": [
+    {
+      "name": "title",
+      "dataType": ["text"],
+      "tokenization": "word",
+      "indexFilterable": true,
+      "indexSearchable": true
+    },
+    {
+      "name": "body",
+      "dataType": ["text"],
+      "tokenization": "word",
+      "indexFilterable": false,
+      "indexSearchable": true
+    },
+    {
+      "name": "publishedAt",
+      "dataType": ["date"],
+      "indexFilterable": true
+    },
+    {
+      "name": "wordCount",
+      "dataType": ["int"],
+      "indexFilterable": true
+    }
+  ]
+}
+```
+
+---
+
+## Create collection
+
+<br />
+
+**`POST /v1/schema`**
+
+Creates a new collection with the provided configuration.
+
+### Request body
+
+<ParamField body="class" type="string" required>
+  Name of the collection. Must start with an uppercase letter and contain only alphanumeric characters. For example: `Article`, `BlogPost`.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Human-readable description of the collection.
+</ParamField>
+
+<ParamField body="vectorizer" type="string">
+  Vectorizer module to use. For example: `text2vec-openai`, `text2vec-cohere`, `text2vec-transformers`, `none`. Defaults to the instance-level default vectorizer.
+</ParamField>
+
+<ParamField body="vectorIndexType" type="string" default="hnsw">
+  Vector index algorithm. One of `hnsw`, `flat`, or `dynamic`. Use `flat` for small datasets (fewer than ~10 000 objects) and `hnsw` for larger ones. `dynamic` switches automatically.
+</ParamField>
+
+<ParamField body="vectorIndexConfig" type="object">
+  Index-specific tuning options.
+  <Expandable title="vectorIndexConfig properties">
+    <ParamField body="distance" type="string" default="cosine">
+      Distance metric. One of `cosine`, `dot`, `l2-squared`, `hamming`, `manhattan`.
+    </ParamField>
+    <ParamField body="ef" type="number" default="64">
+      HNSW search-time expansion factor. Higher values improve recall at the cost of query latency.
+    </ParamField>
+    <ParamField body="efConstruction" type="number" default="128">
+      HNSW build-time expansion factor. Higher values improve recall at the cost of indexing time.
+    </ParamField>
+    <ParamField body="maxConnections" type="number" default="16">
+      Maximum number of connections per node in the HNSW graph.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="moduleConfig" type="object">
+  Module-specific configuration. Keys are module names; values are module-specific option objects.
+</ParamField>
+
+<ParamField body="properties" type="object[]">
+  Initial property definitions. You can also add properties later with the [Add property](#add-property) endpoint.
+  <Expandable title="property fields">
+    <ParamField body="name" type="string" required>
+      Property name. Must start with a lowercase letter.
+    </ParamField>
+    <ParamField body="dataType" type="string[]" required>
+      Array containing the data type. For primitive types use a single-element array: `["text"]`, `["int"]`, `["number"]`, `["boolean"]`, `["date"]`, `["uuid"]`, `["blob"]`. For cross-references, use an array of collection names: `["Article"]`.
+    </ParamField>
+    <ParamField body="tokenization" type="string">
+      Tokenization strategy for `text` properties. One of `word`, `whitespace`, `lowercase`, `field`. Only applies to `text` and `text[]` types.
+    </ParamField>
+    <ParamField body="indexFilterable" type="boolean" default="true">
+      Build a filterable (roaring bitmap) inverted index for this property, enabling fast `where` filters.
+    </ParamField>
+    <ParamField body="indexSearchable" type="boolean" default="true">
+      Build a searchable (BM25) inverted index for this property, enabling keyword search.
+    </ParamField>
+    <ParamField body="description" type="string">
+      Human-readable description of the property.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="multiTenancyConfig" type="object">
+  Multi-tenancy settings.
+  <Expandable title="multiTenancyConfig properties">
+    <ParamField body="enabled" type="boolean" default="false">
+      Enable multi-tenancy for this collection.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="replicationConfig" type="object">
+  Replication settings.
+  <Expandable title="replicationConfig properties">
+    <ParamField body="factor" type="number" default="1">
+      Number of replicas. Must be less than or equal to the number of nodes in the cluster.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://localhost:8080/v1/schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "Article",
+    "description": "A news or blog article.",
+    "vectorizer": "text2vec-openai",
+    "vectorIndexType": "hnsw",
+    "properties": [
+      {
+        "name": "title",
+        "dataType": ["text"],
+        "tokenization": "word"
+      },
+      {
+        "name": "body",
+        "dataType": ["text"],
+        "tokenization": "word"
+      }
+    ]
+  }'
+```
+
+```python Python
+import weaviate
+import weaviate.classes.config as wc
+
+client = weaviate.connect_to_local()
+
+client.collections.create(
+    name="Article",
+    description="A news or blog article.",
+    vectorizer_config=wc.Configure.Vectorizer.text2vec_openai(),
+    properties=[
+        wc.Property(name="title", data_type=wc.DataType.TEXT),
+        wc.Property(name="body", data_type=wc.DataType.TEXT),
+    ]
+)
+```
+
+</CodeGroup>
+
+### Response
+
+Returns `200` with the created class definition. Returns `409` if a collection with the same name already exists.
+
+---
+
+## Get collection
+
+<br />
+
+**`GET /v1/schema/{className}`**
+
+Returns the full definition of a single collection including all properties and configuration.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection to retrieve.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="consistency" type="boolean" default="false">
+  When `true`, reads the schema from the Raft leader to guarantee a consistent view in multi-node deployments.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:8080/v1/schema/Article
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+config = client.collections.get("Article").config.get()
+print(config)
+```
+
+</CodeGroup>
+
+### Response
+
+Returns the full class definition object. Returns `404` if the collection does not exist.
+
+---
+
+## List all collections
+
+<br />
+
+**`GET /v1/schema`**
+
+Returns the definitions of all collections in the current Weaviate instance.
+
+<CodeGroup>
+
+```bash curl
+curl http://localhost:8080/v1/schema
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collections = client.collections.list_all()
+for name, config in collections.items():
+    print(name)
+```
+
+</CodeGroup>
+
+### Response
+
+<ResponseField name="classes" type="object[]" required>
+  Array of class definition objects.
+</ResponseField>
+
+```json
+{
+  "classes": [
+    {
+      "class": "Article",
+      "description": "A news or blog article.",
+      "vectorizer": "text2vec-openai",
+      "vectorIndexType": "hnsw",
+      "properties": [ ... ]
+    }
+  ]
+}
+```
+
+---
+
+## Delete collection
+
+<br />
+
+**`DELETE /v1/schema/{className}`**
+
+Deletes a collection and all objects stored in it.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection to delete.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE http://localhost:8080/v1/schema/Article
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+client.collections.delete("Article")
+```
+
+</CodeGroup>
+
+Returns `200` on success. Returns `400` if the collection does not exist.
+
+---
+
+## Add property
+
+<br />
+
+**`POST /v1/schema/{className}/properties`**
+
+Adds a new property to an existing collection. You cannot modify or remove existing properties through this endpoint — define all required properties at collection creation time where possible.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection to add the property to.
+</ParamField>
+
+### Request body
+
+<ParamField body="name" type="string" required>
+  Property name. Must start with a lowercase letter and be unique within the collection.
+</ParamField>
+
+<ParamField body="dataType" type="string[]" required>
+  Data type array. For example: `["text"]`, `["int"]`, `["boolean"]`, `["date"]`, `["number"]`, `["uuid"]`. Use a collection name for cross-references: `["Author"]`.
+</ParamField>
+
+<ParamField body="tokenization" type="string">
+  Tokenization for `text` properties. One of `word`, `whitespace`, `lowercase`, `field`.
+</ParamField>
+
+<ParamField body="indexFilterable" type="boolean" default="true">
+  Enable filterable inverted index for this property.
+</ParamField>
+
+<ParamField body="indexSearchable" type="boolean" default="true">
+  Enable BM25 searchable index for this property.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Human-readable description of the property.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://localhost:8080/v1/schema/Article/properties \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "publishedAt",
+    "dataType": ["date"],
+    "indexFilterable": true,
+    "description": "Publication date of the article."
+  }'
+```
+
+```python Python
+import weaviate
+import weaviate.classes.config as wc
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+collection.config.add_property(
+    wc.Property(
+        name="publishedAt",
+        data_type=wc.DataType.DATE,
+        index_filterable=True,
+        description="Publication date of the article."
+    )
+)
+```
+
+</CodeGroup>
+
+Returns `200` with the updated class definition on success.
+
+---
+
+## Update collection config
+
+<br />
+
+**`PUT /v1/schema/{className}`**
+
+Updates mutable configuration fields of an existing collection. Only a subset of settings can be changed after creation — primarily vector index tuning parameters. You cannot change the vectorizer, distance metric, or property data types.
+
+### Path parameters
+
+<ParamField path="className" type="string" required>
+  Name of the collection to update.
+</ParamField>
+
+### Request body
+
+Provide the full class definition with the fields you want to change. Fields that cannot be mutated are ignored.
+
+<ParamField body="vectorIndexConfig" type="object">
+  Mutable index settings.
+  <Expandable title="mutable vectorIndexConfig fields">
+    <ParamField body="ef" type="number">
+      HNSW search-time expansion factor. Can be updated without re-indexing.
+    </ParamField>
+    <ParamField body="flatSearchCutoff" type="number">
+      Threshold below which flat search is used instead of HNSW during queries.
+    </ParamField>
+    <ParamField body="dynamicEfMin" type="number">
+      Minimum value for dynamic `ef` adjustment.
+    </ParamField>
+    <ParamField body="dynamicEfMax" type="number">
+      Maximum value for dynamic `ef` adjustment.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT http://localhost:8080/v1/schema/Article \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "Article",
+    "vectorIndexConfig": {
+      "ef": 128
+    }
+  }'
+```
+
+```python Python
+import weaviate
+import weaviate.classes.config as wc
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+collection.config.update(
+    vectorizer_config=wc.Reconfigure.VectorIndex.hnsw(ef=128)
+)
+```
+
+</CodeGroup>
+
+Returns `200` with the updated class definition on success. Returns `404` if the collection does not exist.

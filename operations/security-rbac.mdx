@@ -1,0 +1,234 @@
+---
+title: "Security & RBAC"
+description: "Configure authentication and role-based access control for your Weaviate instance."
+keywords: ["authentication", "authorization", "RBAC", "API key", "OIDC", "security"]
+---
+
+Weaviate supports three authentication methods: anonymous access (for development), API key, and OIDC. Once authentication is enabled, you can use role-based access control (RBAC) to grant users fine-grained permissions over collections, data, and cluster operations.
+
+<Warning>
+  Never run Weaviate with anonymous access enabled in production. Any client that can reach your instance will have full read and write access to all data.
+</Warning>
+
+## Authentication methods
+
+<Tabs>
+  <Tab title="API key">
+    API key authentication is the simplest option for production deployments. You supply a list of allowed keys as environment variables, and clients pass the key in the `Authorization` header.
+
+    ### Setting up API key auth
+
+    <Steps>
+      <Step title="Enable API key authentication">
+        Set the following environment variables on your Weaviate instance:
+
+        ```bash
+        AUTHENTICATION_APIKEY_ENABLED=true
+        AUTHENTICATION_APIKEY_ALLOWED_KEYS=my-secret-key,another-key
+        AUTHENTICATION_APIKEY_USERS=jane@example.com,bob@example.com
+        ```
+
+        Each entry in `AUTHENTICATION_APIKEY_ALLOWED_KEYS` maps to the corresponding entry in `AUTHENTICATION_APIKEY_USERS` by position. In the example above, `my-secret-key` is associated with `jane@example.com`.
+      </Step>
+      <Step title="Disable anonymous access">
+        Set `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=false` to prevent unauthenticated requests:
+
+        ```bash
+        AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=false
+        ```
+      </Step>
+      <Step title="Pass the key in requests">
+        Include the API key in the `Authorization` header as a Bearer token:
+
+        ```bash
+        curl http://localhost:8080/v1/objects \
+          -H "Authorization: Bearer my-secret-key"
+        ```
+
+        The Weaviate Python and TypeScript clients accept the key directly:
+
+        ```python
+        import weaviate
+
+        client = weaviate.connect_to_local(
+            auth_credentials=weaviate.auth.AuthApiKey("my-secret-key")
+        )
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="OIDC">
+    OIDC (OpenID Connect) lets you integrate with an external identity provider such as Keycloak, Auth0, or Okta. Weaviate validates JWTs issued by the provider.
+
+    ### Enabling OIDC
+
+    Set the following environment variables:
+
+    ```bash
+    AUTHENTICATION_OIDC_ENABLED=true
+    AUTHENTICATION_OIDC_ISSUER=https://auth.example.com/realms/my-realm
+    AUTHENTICATION_OIDC_CLIENT_ID=weaviate
+    AUTHENTICATION_OIDC_USERNAME_CLAIM=email
+    ```
+
+    | Variable | Description |
+    |---|---|
+    | `AUTHENTICATION_OIDC_ISSUER` | URL of your identity provider's OIDC discovery endpoint (without `/.well-known/openid-configuration`). |
+    | `AUTHENTICATION_OIDC_CLIENT_ID` | The client ID registered with your identity provider. |
+    | `AUTHENTICATION_OIDC_USERNAME_CLAIM` | The JWT claim to use as the Weaviate username (e.g., `email`, `sub`). Defaults to `sub`. |
+
+    ### Passing a token in requests
+
+    Obtain a JWT from your identity provider and pass it as a Bearer token:
+
+    ```bash
+    curl http://localhost:8080/v1/objects \
+      -H "Authorization: Bearer <your-jwt>"
+    ```
+
+    ```python
+    import weaviate
+
+    client = weaviate.connect_to_local(
+        auth_credentials=weaviate.auth.AuthBearerToken(
+            access_token="<your-jwt>",
+            refresh_token="<your-refresh-token>",
+        )
+    )
+    ```
+  </Tab>
+  <Tab title="Anonymous access">
+    Anonymous access is intended for local development only. With it enabled, all requests are accepted without credentials and run with full permissions.
+
+    ```bash
+    AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+    ```
+
+    <Warning>
+      Do not use anonymous access in production. Disable it by setting `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=false`.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Role-based access control (RBAC)
+
+RBAC lets you assign granular permissions to users or groups. Enable it alongside your chosen authentication method:
+
+```bash
+AUTHORIZATION_RBAC_ENABLED=true
+```
+
+### Built-in roles
+
+Weaviate ships with two assignable built-in roles:
+
+| Role | Description |
+|---|---|
+| `admin` | Full access to all resources — collections, data, schema, backups, nodes, cluster, and roles. |
+| `viewer` | Read-only access to all resources. |
+
+Two additional roles are available only through environment variables and cannot be modified via the API:
+
+| Role | Set via |
+|---|---|
+| `root` | `AUTHORIZATION_RBAC_ROOT_USERS` |
+| `read-only` | `AUTHORIZATION_RBAC_READONLY_USERS` |
+
+### Assigning built-in roles
+
+Assign the `admin` or `viewer` role to a user via the REST API:
+
+```bash
+# Assign the admin role to a user
+curl -X POST http://localhost:8080/v1/authz/roles/admin/users \
+  -H "Authorization: Bearer <admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"user": "jane@example.com"}'
+```
+
+### Creating custom roles
+
+Custom roles let you grant only the permissions a user needs.
+
+```bash
+# Create a role that can read and write data in the Articles collection
+curl -X POST http://localhost:8080/v1/authz/roles \
+  -H "Authorization: Bearer <admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "articles-editor",
+    "permissions": [
+      {
+        "action": "create_data",
+        "data": {"collection": "Articles"}
+      },
+      {
+        "action": "read_data",
+        "data": {"collection": "Articles"}
+      },
+      {
+        "action": "update_data",
+        "data": {"collection": "Articles"}
+      },
+      {
+        "action": "delete_data",
+        "data": {"collection": "Articles"}
+      }
+    ]
+  }'
+```
+
+### Available permissions
+
+Permissions follow the pattern `{verb}_{domain}`. Supported verbs are `create`, `read`, `update`, and `delete`. The following domains are available:
+
+| Domain | Controls |
+|---|---|
+| `collections` | Create, read, update, and delete collection schemas. |
+| `data` | Create, read, update, and delete objects within collections. |
+| `tenants` | Manage tenants in multi-tenant collections. |
+| `backups` | Trigger and manage backup operations. |
+| `roles` | Create, read, update, and delete RBAC roles. |
+| `users` | Create, read, update, and delete users. |
+| `nodes` | Read node status information. |
+| `cluster` | Read cluster-level information. |
+| `replicate` | Manage replication operations per shard. |
+| `aliases` | Manage collection aliases. |
+
+Permissions can scope to a specific collection using a `collection` field, or to all collections using `"*"`.
+
+### Assigning a custom role
+
+```bash
+curl -X POST http://localhost:8080/v1/authz/roles/articles-editor/users \
+  -H "Authorization: Bearer <admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"user": "bob@example.com"}'
+```
+
+For OIDC users, the `user` field must match the value of the configured `AUTHENTICATION_OIDC_USERNAME_CLAIM` in the JWT.
+
+## Admin list (simplified authorization)
+
+For simpler deployments, the admin list grants full admin access to specific users without the overhead of role management:
+
+```bash
+AUTHORIZATION_ADMINLIST_ENABLED=true
+AUTHORIZATION_ADMINLIST_USERS=jane@example.com
+AUTHORIZATION_ADMINLIST_READONLY_USERS=bob@example.com
+AUTHORIZATION_ADMINLIST_GROUPS=ops-team
+AUTHORIZATION_ADMINLIST_READONLY_GROUPS=dev-team
+```
+
+| Variable | Effect |
+|---|---|
+| `AUTHORIZATION_ADMINLIST_USERS` | Users with full admin access. |
+| `AUTHORIZATION_ADMINLIST_READONLY_USERS` | Users with read-only access. |
+| `AUTHORIZATION_ADMINLIST_GROUPS` | OIDC groups with full admin access. |
+| `AUTHORIZATION_ADMINLIST_READONLY_GROUPS` | OIDC groups with read-only access. |
+
+<Note>
+  A user cannot appear in both the admin and read-only lists simultaneously. Weaviate will refuse to start if it detects an overlap.
+</Note>
+
+The admin list and RBAC are mutually exclusive. Enable one or the other, not both.

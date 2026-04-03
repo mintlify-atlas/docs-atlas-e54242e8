@@ -1,0 +1,325 @@
+---
+title: "gRPC batch operations"
+description: "Reference for Weaviate gRPC batch RPCs: BatchObjects, BatchReferences, BatchStream, and BatchDelete."
+keywords: ["gRPC", "batch", "bulk insert", "streaming", "batch delete", "ingestion"]
+---
+
+The gRPC API provides three RPCs for batch write operations and one for batch deletion. Use these instead of the REST batch endpoints when throughput and latency matter.
+
+```protobuf weaviate.proto
+rpc BatchObjects(BatchObjectsRequest) returns (BatchObjectsReply) {};
+rpc BatchReferences(BatchReferencesRequest) returns (BatchReferencesReply) {};
+rpc BatchDelete(BatchDeleteRequest) returns (BatchDeleteReply) {};
+rpc BatchStream(stream BatchStreamRequest) returns (stream BatchStreamReply) {};
+```
+
+## BatchObjects
+
+Insert multiple objects in a single unary RPC call.
+
+### Request
+
+```protobuf batch.proto
+message BatchObjectsRequest {
+  repeated BatchObject objects = 1;
+  optional ConsistencyLevel consistency_level = 2;
+}
+```
+
+Each `BatchObject` carries:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `uuid` | `string` | Optional UUID. Weaviate generates one if omitted. |
+| `collection` | `string` | Target collection name |
+| `tenant` | `string` | Tenant name for multi-tenant collections |
+| `properties` | `BatchObject.Properties` | Object properties (see below) |
+| `vectors` | `repeated Vectors` | Named vectors for multi-vector collections |
+| `vector_bytes` | `bytes` | Raw default vector as little-endian float32 bytes |
+
+#### BatchObject.Properties
+
+```protobuf batch.proto
+message BatchObject {
+  message Properties {
+    google.protobuf.Struct non_ref_properties = 1;
+    repeated SingleTargetRefProps single_target_ref_props = 2;
+    repeated MultiTargetRefProps multi_target_ref_props = 3;
+    repeated NumberArrayProperties number_array_properties = 4;
+    repeated IntArrayProperties int_array_properties = 5;
+    repeated TextArrayProperties text_array_properties = 6;
+    repeated BooleanArrayProperties boolean_array_properties = 7;
+    repeated ObjectProperties object_properties = 8;
+    repeated ObjectArrayProperties object_array_properties = 9;
+    repeated string empty_list_props = 10;
+  }
+}
+```
+
+### Reply
+
+```protobuf batch.proto
+message BatchObjectsReply {
+  message BatchError {
+    int32 index = 1;
+    string error = 2;
+  }
+  float took = 1;
+  repeated BatchError errors = 2;
+}
+```
+
+`errors` is empty on full success. Each `BatchError` contains the zero-based `index` of the failed object and an error message. Objects not listed in `errors` were inserted successfully.
+
+### Python example
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+with collection.batch.fixed_size(batch_size=100) as batch:
+    for article in articles:
+        batch.add_object({
+            "title": article["title"],
+            "content": article["content"],
+            "year": article["year"],
+        })
+
+# Check for errors
+if collection.batch.failed_objects:
+    for obj in collection.batch.failed_objects:
+        print(f"Failed: {obj.message}")
+```
+
+## BatchReferences
+
+Insert multiple cross-references in a single unary RPC call.
+
+### Request
+
+```protobuf batch.proto
+message BatchReferencesRequest {
+  repeated BatchReference references = 1;
+  optional ConsistencyLevel consistency_level = 2;
+}
+
+message BatchReference {
+  string name = 1;
+  string from_collection = 2;
+  string from_uuid = 3;
+  optional string to_collection = 4;
+  string to_uuid = 5;
+  string tenant = 6;
+}
+```
+
+### Reply
+
+```protobuf batch.proto
+message BatchReferencesReply {
+  message BatchError {
+    int32 index = 1;
+    string error = 2;
+  }
+  float took = 1;
+  repeated BatchError errors = 2;
+}
+```
+
+The reply follows the same pattern as `BatchObjectsReply`.
+
+## BatchStream
+
+`BatchStream` is a bidirectional streaming RPC designed for continuous high-volume ingestion. The client sends a stream of `BatchStreamRequest` messages and receives a stream of `BatchStreamReply` messages. The server applies back-pressure signals so the client can self-regulate batch size.
+
+### Protocol
+
+The stream follows a session protocol:
+
+1. **Start** — client sends a `Start` message to open the session.
+2. **Data** — client sends one or more `Data` messages containing objects or references.
+3. **Stop** — client sends a `Stop` message to signal the end of the batch.
+4. **Results** — server sends `Results` messages acknowledging each batch.
+
+```protobuf batch.proto
+message BatchStreamRequest {
+  message Start {
+    optional ConsistencyLevel consistency_level = 1;
+  }
+  message Stop {}
+  message Data {
+    message Objects {
+      repeated BatchObject values = 1;
+    }
+    message References {
+      repeated BatchReference values = 1;
+    }
+    Objects objects = 1;
+    References references = 2;
+  }
+  oneof message {
+    Start start = 1;
+    Data data = 2;
+    Stop stop = 3;
+  }
+}
+```
+
+### Server reply messages
+
+```protobuf batch.proto
+message BatchStreamReply {
+  message Started {}
+  message ShuttingDown {}
+  message OutOfMemory {
+    repeated string uuids = 1;
+    repeated string beacons = 2;
+    int32 wait_time = 3;  // seconds before ShuttingDown
+  }
+  message Backoff {
+    int32 batch_size = 1;  // recommended batch size
+  }
+  message Acks {
+    repeated string uuids = 1;
+    repeated string beacons = 2;
+  }
+  message Results {
+    message Error {
+      string error = 1;
+      oneof detail { string uuid = 2; string beacon = 3; }
+    }
+    message Success {
+      oneof detail { string uuid = 2; string beacon = 3; }
+    }
+    repeated Error errors = 1;
+    repeated Success successes = 2;
+  }
+  oneof message {
+    Results results = 1;
+    ShuttingDown shutting_down = 2;
+    Started started = 4;
+    Backoff backoff = 5;
+    Acks acks = 6;
+    OutOfMemory out_of_memory = 7;
+  }
+}
+```
+
+### Back-pressure handling
+
+| Server message | Meaning | Client action |
+|---------------|---------|---------------|
+| `Started` | Session is open | Begin sending `Data` messages |
+| `Acks` | UUIDs/beacons acknowledged | Continue |
+| `Backoff` | Reduce batch size to `batch_size` | Send smaller batches |
+| `OutOfMemory` | Server memory pressure | Pause; wait `wait_time` seconds; expect `ShuttingDown` |
+| `ShuttingDown` | Server is closing the stream | Exit the stream cleanly |
+| `Results` | Per-batch outcome | Inspect `errors` and `successes` |
+
+### Python example
+
+```python python
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+# The Python client manages the streaming protocol automatically
+with collection.batch.dynamic() as batch:
+    for article in large_dataset:
+        batch.add_object({
+            "title": article["title"],
+            "content": article["content"],
+        })
+```
+
+<Note>
+  The Python client selects between `BatchObjects` and `BatchStream` automatically based on throughput. Use `batch.dynamic()` or `batch.fixed_size()` to configure batch behavior; the underlying RPC is managed for you.
+</Note>
+
+## BatchDelete
+
+Delete all objects in a collection that match a filter.
+
+### Request
+
+```protobuf batch_delete.proto
+message BatchDeleteRequest {
+  string collection = 1;
+  Filters filters = 2;
+  bool verbose = 3;
+  bool dry_run = 4;
+  optional ConsistencyLevel consistency_level = 5;
+  optional string tenant = 6;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `collection` | Target collection |
+| `filters` | Filter identifying objects to delete |
+| `verbose` | If true, include per-object results in the reply |
+| `dry_run` | If true, report matches without deleting |
+| `consistency_level` | Write consistency: `ONE`, `QUORUM`, or `ALL` |
+| `tenant` | Tenant name for multi-tenant collections |
+
+### Reply
+
+```protobuf batch_delete.proto
+message BatchDeleteReply {
+  float took = 1;
+  int64 failed = 2;
+  int64 matches = 3;
+  int64 successful = 4;
+  repeated BatchDeleteObject objects = 5;
+}
+
+message BatchDeleteObject {
+  bytes uuid = 1;
+  bool successful = 2;
+  optional string error = 3;
+}
+```
+
+`objects` is populated only when `verbose` is true in the request.
+
+### Python example
+
+```python python
+import weaviate.classes as wvc
+
+collection.data.delete_many(
+    where=wvc.query.Filter.by_property("year").less_than(2000),
+)
+```
+
+## Performance characteristics
+
+| RPC | Best for |
+|-----|----------|
+| `BatchObjects` | One-shot ingestion of up to tens of thousands of objects |
+| `BatchStream` | Continuous high-volume ingestion (millions of objects) |
+| `BatchDelete` | Removing large sets of objects without loading them first |
+
+For maximum throughput with `BatchStream`:
+- Send batches of 100–1000 objects per `Data` message.
+- Respect `Backoff` messages from the server.
+- Use multiple parallel streams if a single stream saturates the network.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="gRPC overview" icon="bolt" href="/api/grpc-overview">
+    Authentication, port, and service definition.
+  </Card>
+  <Card title="REST batch" icon="layer-group" href="/api/rest-batch">
+    REST alternative for batch objects and references.
+  </Card>
+  <Card title="Data: manage objects" icon="cube" href="/data/manage-objects">
+    Single-object create, update, and delete.
+  </Card>
+  <Card title="Multi-tenancy" icon="building" href="/data/multi-tenancy">
+    Working with tenants in batch operations.
+  </Card>
+</CardGroup>

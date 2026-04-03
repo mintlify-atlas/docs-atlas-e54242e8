@@ -1,0 +1,370 @@
+---
+title: 'Kubernetes deployment'
+description: 'Deploy Weaviate on Kubernetes using the official Helm chart with support for multi-node clusters and RAFT consensus.'
+keywords: ['kubernetes', 'helm', 'k8s', 'cluster', 'production', 'deployment']
+---
+
+Weaviate provides an official Helm chart for Kubernetes deployments. This guide covers installing a single-node instance and scaling to a production multi-node cluster with RAFT consensus.
+
+## Prerequisites
+
+<CardGroup cols={3}>
+  <Card title="Kubernetes" icon="server">
+    Kubernetes 1.23 or later. Works with EKS, GKE, AKS, and self-managed clusters.
+  </Card>
+  <Card title="Helm" icon="cube">
+    Helm v3.8 or later installed and configured with access to your cluster.
+  </Card>
+  <Card title="kubectl" icon="terminal">
+    `kubectl` configured to communicate with your target cluster.
+  </Card>
+</CardGroup>
+
+## Minimum resource requirements
+
+| Component | Development | Production (per node) |
+|---|---|---|
+| CPU | 2 cores | 4 cores |
+| Memory | 4 GiB | 8–16 GiB |
+| Storage | 10 GiB | 100 GiB+ (SSD) |
+
+<Warning>
+Production deployments require fast SSD-backed persistent storage. Weaviate performs frequent random I/O for HNSW index operations. Network-attached storage with high latency (e.g. NFS, some cloud NAS) will significantly degrade performance.
+</Warning>
+
+## Installation
+
+<Steps>
+  <Step title="Add the Weaviate Helm repository">
+    ```bash
+    helm repo add weaviate https://weaviate.github.io/weaviate-helm
+    helm repo update
+    ```
+  </Step>
+
+  <Step title="Create a values.yaml file">
+    Create a `values.yaml` file to configure your deployment. Start with the example below and adjust for your environment.
+
+    ```yaml values.yaml
+    # Number of Weaviate replicas (voter nodes)
+    replicas: 1
+
+    image:
+      tag: "1.36.0"
+
+    # Resource requests and limits
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+
+    # Persistent storage
+    storage:
+      size: "32Gi"
+      storageClassName: ""   # Leave empty to use the cluster default
+
+    # Environment variables
+    env:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      QUERY_DEFAULTS_LIMIT: "25"
+      DEFAULT_VECTORIZER_MODULE: "none"
+      ENABLE_MODULES: ""
+
+    # Service type — use LoadBalancer to expose externally
+    service:
+      type: ClusterIP
+      port: 80
+    ```
+  </Step>
+
+  <Step title="Install the Helm chart">
+    ```bash
+    helm install weaviate weaviate/weaviate \
+      --namespace weaviate \
+      --create-namespace \
+      --values values.yaml
+    ```
+  </Step>
+
+  <Step title="Verify the deployment">
+    <CodeGroup>
+
+    ```bash kubectl
+    kubectl get pods -n weaviate
+    kubectl get svc -n weaviate
+    ```
+
+    ```bash helm
+    helm status weaviate -n weaviate
+    ```
+
+    </CodeGroup>
+
+    Wait for all pods to reach `Running` status. Then check the Weaviate health endpoint:
+
+    ```bash
+    kubectl port-forward svc/weaviate 8080:80 -n weaviate &
+    curl http://localhost:8080/v1/meta
+    ```
+  </Step>
+</Steps>
+
+## Configuration examples
+
+<CodeGroup>
+
+```yaml single-node
+# Single-node deployment with API key authentication
+replicas: 1
+
+image:
+  tag: "1.36.0"
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+
+storage:
+  size: "50Gi"
+  storageClassName: "standard"
+
+env:
+  AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+  AUTHENTICATION_APIKEY_ENABLED: "true"
+  AUTHENTICATION_APIKEY_ALLOWED_KEYS: "my-secret-key"
+  AUTHENTICATION_APIKEY_USERS: "admin@example.com"
+  AUTHORIZATION_ADMINLIST_ENABLED: "true"
+  AUTHORIZATION_ADMINLIST_USERS: "admin@example.com"
+  QUERY_DEFAULTS_LIMIT: "25"
+  DEFAULT_VECTORIZER_MODULE: "none"
+
+service:
+  type: ClusterIP
+  port: 80
+```
+
+```yaml multi-node
+# Three-node cluster with RAFT consensus
+replicas: 3
+
+image:
+  tag: "1.36.0"
+
+resources:
+  requests:
+    cpu: "2"
+    memory: "4Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+
+storage:
+  size: "100Gi"
+  storageClassName: "fast-ssd"
+
+env:
+  AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+  AUTHENTICATION_APIKEY_ENABLED: "true"
+  AUTHENTICATION_APIKEY_ALLOWED_KEYS: "my-secret-key"
+  AUTHENTICATION_APIKEY_USERS: "admin@example.com"
+  AUTHORIZATION_ADMINLIST_ENABLED: "true"
+  AUTHORIZATION_ADMINLIST_USERS: "admin@example.com"
+  QUERY_DEFAULTS_LIMIT: "25"
+  DEFAULT_VECTORIZER_MODULE: "none"
+  REPLICATION_MINIMUM_FACTOR: "2"
+
+service:
+  type: ClusterIP
+  port: 80
+```
+
+```yaml with-modules
+# Deployment with vectorizer modules enabled
+replicas: 1
+
+image:
+  tag: "1.36.0"
+
+resources:
+  requests:
+    cpu: "2"
+    memory: "4Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+
+storage:
+  size: "50Gi"
+  storageClassName: "standard"
+
+env:
+  AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+  ENABLE_MODULES: "text2vec-openai,generative-openai"
+  DEFAULT_VECTORIZER_MODULE: "text2vec-openai"
+  QUERY_DEFAULTS_LIMIT: "25"
+
+service:
+  type: ClusterIP
+  port: 80
+```
+
+```yaml loadbalancer
+# Publicly accessible deployment with a LoadBalancer service
+replicas: 1
+
+image:
+  tag: "1.36.0"
+
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+
+storage:
+  size: "50Gi"
+
+env:
+  AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+  AUTHENTICATION_APIKEY_ENABLED: "true"
+  AUTHENTICATION_APIKEY_ALLOWED_KEYS: "my-secret-key"
+  AUTHENTICATION_APIKEY_USERS: "admin@example.com"
+  AUTHORIZATION_ADMINLIST_ENABLED: "true"
+  AUTHORIZATION_ADMINLIST_USERS: "admin@example.com"
+
+service:
+  type: LoadBalancer
+  port: 80
+```
+
+</CodeGroup>
+
+## Persistent volume configuration
+
+The Helm chart creates a `PersistentVolumeClaim` for each pod. The storage class controls the underlying provisioner.
+
+```yaml values.yaml (storage section)
+storage:
+  size: "100Gi"
+  # Leave empty to use the cluster's default StorageClass
+  # Use a StorageClass backed by SSDs for production
+  storageClassName: "premium-ssd"
+```
+
+To list available storage classes in your cluster:
+
+```bash
+kubectl get storageclass
+```
+
+<Note>
+Weaviate data is stored at `PERSISTENCE_DATA_PATH` (default `/var/lib/weaviate`) inside the container. The Helm chart mounts the PVC at this path automatically.
+</Note>
+
+## Service configuration
+
+| Service type | Use case |
+|---|---|
+| `ClusterIP` | Internal access only. Use `kubectl port-forward` or an ingress controller for external access. |
+| `LoadBalancer` | Provisions a cloud load balancer. Suitable for direct external access on supported cloud providers. |
+| `NodePort` | Exposes the service on each node's IP. Useful for bare-metal clusters without a load balancer. |
+
+## Multi-node cluster with RAFT
+
+Weaviate uses RAFT consensus for distributed schema management. When deploying multiple replicas, the Helm chart configures RAFT automatically using the StatefulSet pod hostnames.
+
+Key environment variables for multi-node setups:
+
+| Variable | Description |
+|---|---|
+| `RAFT_BOOTSTRAP_EXPECT` | Number of voter nodes required to form a quorum. Set to the same value as `replicas`. |
+| `RAFT_JOIN` | Comma-separated list of `hostname:raftPort` peers. Managed automatically by the Helm chart. |
+| `CLUSTER_HOSTNAME` | Node identifier. Set to the pod's hostname automatically by the Helm chart. |
+| `CLUSTER_GOSSIP_BIND_PORT` | Port for memberlist gossip protocol. Default: `7946`. |
+| `REPLICATION_MINIMUM_FACTOR` | Minimum number of replicas a write must reach before acknowledgement. |
+
+<Note>
+For a three-node cluster, set `REPLICATION_MINIMUM_FACTOR: "2"` to ensure writes are acknowledged by a quorum. This protects against data loss if one node becomes unavailable.
+</Note>
+
+### RAFT quorum requirements
+
+| Cluster size | Minimum `RAFT_BOOTSTRAP_EXPECT` | Fault tolerance |
+|---|---|---|
+| 1 node | 1 | 0 node failures |
+| 3 nodes | 3 | 1 node failure |
+| 5 nodes | 5 | 2 node failures |
+
+## Upgrade procedure
+
+<Steps>
+  <Step title="Update the Helm repository">
+    ```bash
+    helm repo update
+    ```
+  </Step>
+
+  <Step title="Review the new chart's values">
+    Check if any default values have changed between versions:
+
+    ```bash
+    helm show values weaviate/weaviate > new-defaults.yaml
+    diff new-defaults.yaml values.yaml
+    ```
+  </Step>
+
+  <Step title="Run the upgrade">
+    ```bash
+    helm upgrade weaviate weaviate/weaviate \
+      --namespace weaviate \
+      --values values.yaml
+    ```
+
+    The Helm chart performs a rolling update, replacing one pod at a time to maintain availability.
+  </Step>
+
+  <Step title="Verify the upgrade">
+    ```bash
+    kubectl rollout status statefulset/weaviate -n weaviate
+    curl http://localhost:8080/v1/meta
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Back up your data before upgrading between major versions. Use the backup module to create a snapshot. See [backups](/operations/backups) for instructions.
+</Warning>
+
+## Uninstall
+
+```bash
+helm uninstall weaviate -n weaviate
+```
+
+<Warning>
+Uninstalling the chart does **not** delete the `PersistentVolumeClaim` resources by default. Delete them explicitly if you want to remove the data:
+
+```bash
+kubectl delete pvc -l app.kubernetes.io/name=weaviate -n weaviate
+```
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration reference" icon="sliders" href="/deployment/configuration">
+    Full list of environment variables and their defaults.
+  </Card>
+  <Card title="Replication" icon="copy" href="/operations/replication">
+    Configure replication factors and consistency levels.
+  </Card>
+</CardGroup>

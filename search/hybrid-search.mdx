@@ -1,0 +1,287 @@
+---
+title: 'Hybrid search'
+description: 'Combine BM25 keyword search and vector search into a single ranked result list using the alpha parameter.'
+keywords: ['hybrid search', 'BM25', 'vector search', 'alpha', 'fusion', 'ranked fusion', 'relative score fusion']
+---
+
+Hybrid search runs a BM25 keyword search and a vector similarity search in parallel, then merges the two result lists into a single ranked list. This captures both exact term matches and semantic similarity in one query.
+
+## How it works
+
+1. Weaviate executes a BM25 search over the inverted index.
+2. Weaviate executes a vector search using the query text (vectorized by the collection's configured vectorizer).
+3. The two ranked lists are merged using a fusion algorithm weighted by `alpha`.
+
+## The alpha parameter
+
+`alpha` controls how much weight goes to each component:
+
+| Value | Behavior |
+|---|---|
+| `0.0` | Pure BM25 — vector results are ignored |
+| `0.5` | Balanced — equal weight to both (default) |
+| `1.0` | Pure vector — BM25 results are ignored |
+
+<Tabs>
+  <Tab title="Balanced (alpha=0.5)">
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.query.hybrid(
+    query="neural network training",
+    alpha=0.5,
+    limit=10,
+    return_metadata=wvc.query.MetadataQuery(score=True, explain_score=True),
+)
+
+for obj in results.objects:
+    print(obj.properties["title"], obj.metadata.score)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: { query: \"neural network training\", alpha: 0.5 }
+          limit: 10
+        ) {
+          title
+          _additional { score explainScore }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+  </Tab>
+  <Tab title="Vector-heavy (alpha=0.75)">
+
+<CodeGroup>
+
+```python python
+results = collection.query.hybrid(
+    query="neural network training",
+    alpha=0.75,  # 75% weight on vector, 25% on BM25
+    limit=10,
+)
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: { query: \"neural network training\", alpha: 0.75 }
+          limit: 10
+        ) {
+          title
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+  </Tab>
+  <Tab title="Keyword-heavy (alpha=0.25)">
+
+<CodeGroup>
+
+```python python
+results = collection.query.hybrid(
+    query="neural network training",
+    alpha=0.25,  # 25% weight on vector, 75% on BM25
+    limit=10,
+)
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: { query: \"neural network training\", alpha: 0.25 }
+          limit: 10
+        ) {
+          title
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+  </Tab>
+</Tabs>
+
+## Fusion algorithms
+
+The fusion algorithm determines how the BM25 and vector ranked lists are combined.
+
+### Ranked fusion (default)
+
+Ranked fusion uses reciprocal rank scoring. Each result's contribution is `weight / (rank + 60)`. The constant `60` reduces the influence of rank position, making top results in either list score well overall.
+
+Use ranked fusion when you want a simple, stable merge that avoids large score swings.
+
+### Relative score fusion
+
+Relative score fusion normalizes the raw BM25 and vector scores to a [0, 1] range before combining them. This preserves relative score differences within each list — a document that scored much higher than its peers in the vector results will retain that advantage.
+
+Use relative score fusion when score magnitudes are meaningful and you want the fusion to reflect them.
+
+<CodeGroup>
+
+```python python
+from weaviate.classes.query import HybridFusion
+
+results = collection.query.hybrid(
+    query="deep learning optimization",
+    alpha=0.5,
+    fusion_type=HybridFusion.RELATIVE_SCORE,
+    limit=10,
+)
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: {
+            query: \"deep learning optimization\",
+            alpha: 0.5,
+            fusionType: relativeScoreFusion
+          }
+          limit: 10
+        ) {
+          title
+          _additional { score explainScore }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## Property weighting
+
+You can restrict the BM25 component to specific properties and apply per-property boost multipliers using the `^` notation.
+
+```python python
+results = collection.query.hybrid(
+    query="transformer architecture",
+    query_properties=["title^2", "abstract"],  # title has 2x weight
+    alpha=0.5,
+    limit=10,
+)
+```
+
+In GraphQL:
+
+```graphql graphql
+Get {
+  Article(
+    hybrid: {
+      query: "transformer architecture"
+      properties: ["title^2", "abstract"]
+      alpha: 0.5
+    }
+    limit: 10
+  ) {
+    title
+    _additional { score }
+  }
+}
+```
+
+## Filtering hybrid results
+
+Apply a `Filter` to narrow the candidate set before running both searches. Filters are applied as pre-filters, meaning only matching objects are considered for BM25 and vector scoring.
+
+<CodeGroup>
+
+```python python
+from weaviate.classes.query import Filter
+
+results = collection.query.hybrid(
+    query="electric vehicles",
+    alpha=0.5,
+    filters=Filter.by_property("category").equal("technology"),
+    limit=10,
+)
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: { query: \"electric vehicles\", alpha: 0.5 }
+          where: { path: [\"category\"], operator: Equal, valueText: \"technology\" }
+          limit: 10
+        ) {
+          title
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## When to use hybrid search
+
+| Scenario | Recommended approach |
+|---|---|
+| Users type natural language questions | Vector search or hybrid with high alpha |
+| Users search for specific product codes or names | BM25 or hybrid with low alpha |
+| Mixed user base with varied query styles | Hybrid at alpha=0.5 |
+| Domain where terminology matters (legal, medical) | Hybrid with low-to-mid alpha |
+| Discovery or exploratory search | Vector search or hybrid with high alpha |
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Vector search" icon="vector-square" href="/search/vector-search">
+    Pure vector similarity search with near_text, near_vector, and more.
+  </Card>
+  <Card title="Keyword search (BM25)" icon="font" href="/search/keyword-search">
+    Exact term matching with BM25 scoring.
+  </Card>
+  <Card title="Filters" icon="filter" href="/search/filters">
+    Pre-filter objects before scoring.
+  </Card>
+  <Card title="Reranking" icon="arrow-up-down" href="/search/reranking">
+    Re-score a candidate set with a cross-encoder for higher precision.
+  </Card>
+</CardGroup>

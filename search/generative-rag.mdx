@@ -1,0 +1,263 @@
+---
+title: 'Generative search (RAG)'
+description: 'Retrieve objects from Weaviate and pass them to a generative AI model to produce grounded, context-aware responses.'
+keywords: ['generative search', 'RAG', 'retrieval augmented generation', 'generative module', 'single prompt', 'grouped task']
+---
+
+Generative search combines Weaviate's retrieval capabilities with a large language model (LLM). Weaviate first retrieves relevant objects using any search method (vector, BM25, or hybrid), then passes the retrieved objects to an LLM to produce a response grounded in your data.
+
+This pattern is commonly called Retrieval-Augmented Generation (RAG).
+
+## How it works
+
+1. Weaviate executes a search query (near_text, bm25, hybrid, etc.) and retrieves candidate objects.
+2. The retrieved object properties are injected into a prompt template.
+3. The configured generative module sends the prompt to an LLM API.
+4. The LLM's response is returned alongside the original search results.
+
+<Note>
+You must configure a generative module for your collection and set a valid API key for the LLM provider. See [Generative modules](/modules/generative) for setup instructions.
+</Note>
+
+## Single prompt vs grouped task
+
+<Tabs>
+  <Tab title="Single prompt">
+
+A single prompt generates one LLM response **per retrieved object**. Use `{property_name}` placeholders in the prompt to inject property values from each object.
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+from weaviate.classes.generate import GenerateOptions
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.generate.near_text(
+    query="climate change solutions",
+    limit=5,
+    single_prompt="Summarize the following article in one sentence: {title}. {abstract}",
+)
+
+for obj in results.objects:
+    print(obj.properties["title"])
+    print(obj.generated)  # LLM response for this object
+    print()
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          nearText: { concepts: [\"climate change solutions\"] }
+          limit: 5
+        ) {
+          title
+          abstract
+          _additional {
+            generate(
+              singleResult: {
+                prompt: \"Summarize the following article in one sentence: {title}. {abstract}\"
+              }
+            ) {
+              singleResult
+              error
+            }
+          }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+The `{title}` and `{abstract}` placeholders are replaced with the property values from each individual object before the prompt is sent to the LLM.
+
+  </Tab>
+  <Tab title="Grouped task">
+
+A grouped task generates a **single LLM response** that synthesizes information from all retrieved objects. Use this for summarization, comparison, or question answering over multiple results.
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+from weaviate.classes.generate import GenerateOptions
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.generate.near_text(
+    query="renewable energy breakthroughs",
+    limit=10,
+    grouped_task="Based on these articles, what are the three most significant recent advances in renewable energy?",
+    grouped_properties=["title", "abstract"],  # only these properties are sent to the LLM
+)
+
+print(results.generated)  # single response over all results
+
+for obj in results.objects:
+    print("-", obj.properties["title"])
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          nearText: { concepts: [\"renewable energy breakthroughs\"] }
+          limit: 10
+        ) {
+          title
+          abstract
+          _additional {
+            generate(
+              groupedResult: {
+                task: \"Based on these articles, what are the three most significant recent advances in renewable energy?\"
+                properties: [\"title\", \"abstract\"]
+              }
+            ) {
+              groupedResult
+              error
+            }
+          }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+  </Tab>
+</Tabs>
+
+## Available generative providers
+
+Weaviate supports the following LLM providers through generative modules:
+
+| Provider | Module |
+|---|---|
+| OpenAI / Azure OpenAI | `generative-openai` |
+| Cohere | `generative-cohere` |
+| Anthropic | `generative-anthropic` |
+| Google (Vertex AI / Gemini) | `generative-google` |
+| AWS Bedrock | `generative-aws` |
+| Mistral | `generative-mistral` |
+| Ollama (local) | `generative-ollama` |
+| Databricks | `generative-databricks` |
+| NVIDIA | `generative-nvidia` |
+| xAI | `generative-xai` |
+| FriendliAI | `generative-friendliai` |
+| ContextualAI | `generative-contextualai` |
+
+## Configuring the generative module
+
+Set the generative module in the collection schema's `generative_config`. The module and model you configure here are used unless overridden at query time.
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+client.collections.create(
+    name="Article",
+    generative_config=wvc.config.Configure.Generative.openai(
+        model="gpt-4o",
+    ),
+    vectorizer_config=wvc.config.Configure.Vectorizer.text2vec_openai(),
+    properties=[
+        wvc.config.Property(name="title", data_type=wvc.config.DataType.TEXT),
+        wvc.config.Property(name="abstract", data_type=wvc.config.DataType.TEXT),
+    ],
+)
+
+client.close()
+```
+
+## Response format
+
+Each search result in a `single_prompt` query includes a `generated` field containing the LLM's response for that object. A `grouped_task` query places the single combined response in `results.generated` on the top-level response object.
+
+```python python
+# Single prompt response shape
+for obj in results.objects:
+    obj.properties       # original object properties
+    obj.generated        # LLM response text for this object
+
+# Grouped task response shape
+results.generated        # single LLM response over all objects
+results.objects          # original retrieved objects
+```
+
+## Overriding model parameters at query time
+
+You can override the model, temperature, and other parameters per query without changing the collection schema.
+
+```python python
+from weaviate.classes.generate import GenerativeConfig
+
+results = collection.generate.near_text(
+    query="protein folding",
+    limit=5,
+    single_prompt="Explain this research finding in plain language: {title}. {abstract}",
+    generative_provider=GenerativeConfig.openai(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        max_tokens=256,
+    ),
+)
+```
+
+## Combining RAG with filters
+
+All standard Weaviate search parameters work alongside generative queries, including filters, hybrid search, and pagination.
+
+```python python
+from weaviate.classes.query import Filter
+
+results = collection.generate.hybrid(
+    query="mRNA vaccine development",
+    alpha=0.6,
+    filters=Filter.by_property("year").greater_than_equal(2020),
+    limit=8,
+    grouped_task="What progress has been made in mRNA vaccine development since 2020?",
+    grouped_properties=["title", "abstract", "year"],
+)
+
+print(results.generated)
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Generative modules" icon="robot" href="/modules/generative">
+    Configure LLM providers and model settings for your collections.
+  </Card>
+  <Card title="Vector search" icon="magnifying-glass" href="/search/vector-search">
+    Retrieve candidates with near_text, near_vector, and near_object.
+  </Card>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Combine BM25 and vector retrieval before passing to a generative model.
+  </Card>
+  <Card title="Reranking" icon="arrow-up-down" href="/search/reranking">
+    Improve retrieval precision before generation with a cross-encoder.
+  </Card>
+</CardGroup>

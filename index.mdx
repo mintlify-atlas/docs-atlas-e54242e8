@@ -1,97 +1,102 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Weaviate Documentation"
+description: "The open-source vector database for AI-powered search, RAG, and semantic applications — built for production scale."
 ---
 
-## Setting up
+Weaviate is an open-source, cloud-native vector database that stores both objects and vectors. It enables semantic search, hybrid search, retrieval-augmented generation (RAG), and image search — all in a single, scalable platform built with Go.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Weaviate running locally with Docker and perform your first semantic search in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts">
+    Understand vector databases, HNSW indexing, hybrid search, and Weaviate's architecture.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="API Reference" icon="code" href="/api/rest-overview">
+    Explore the REST, gRPC, and GraphQL APIs with full parameter and response documentation.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Search Guide" icon="magnifying-glass" href="/search/vector-search">
+    Learn vector search, hybrid search, BM25, filtering, and generative RAG queries.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Get started in 3 steps
 
-Everything you need to create world-class documentation.
+<Steps>
+  <Step title="Deploy Weaviate">
+    Run Weaviate locally with Docker or deploy to Kubernetes. Weaviate exposes REST on port `8080` and gRPC on port `50051`.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+    ```bash
+    docker run -p 8080:8080 -p 50051:50051 cr.weaviate.io/semitechnologies/weaviate:1.36.0
+    ```
+  </Step>
+  <Step title="Create a collection">
+    Define a collection with a schema and choose a vectorizer module to automatically generate embeddings on import.
 
-## Need inspiration?
+    ```python
+    import weaviate
+    from weaviate.classes.config import Configure, Property, DataType
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    client = weaviate.connect_to_local()
+    client.collections.create(
+        name="Article",
+        properties=[Property(name="content", data_type=DataType.TEXT)],
+        vector_config=Configure.Vectors.text2vec_model2vec(),
+    )
+    ```
+  </Step>
+  <Step title="Import data and search">
+    Insert objects — Weaviate auto-generates vectors — then run semantic or hybrid search.
+
+    ```python
+    articles = client.collections.get("Article")
+    articles.data.insert_many([
+        {"content": "Vector databases enable semantic search"},
+        {"content": "Weaviate supports hybrid search capabilities"},
+    ])
+
+    results = articles.query.near_text(query="semantic search", limit=1)
+    print(results.objects[0].properties)
+    ```
+  </Step>
+</Steps>
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Vector & Hybrid Search" icon="vector-square" href="/search/vector-search">
+    Combine HNSW vector similarity search with BM25 keyword search for best-of-both results.
+  </Card>
+  <Card title="Generative RAG" icon="robot" href="/search/generative-rag">
+    Run retrieval-augmented generation queries against OpenAI, Cohere, Anthropic, and more — directly from the database.
+  </Card>
+  <Card title="Multi-Tenancy" icon="building" href="/data/multi-tenancy">
+    Isolate data per customer or user with native multi-tenancy and fine-grained RBAC controls.
+  </Card>
+  <Card title="Vector Compression" icon="compress" href="/data/compression">
+    Reduce memory usage with Product Quantization (PQ), Binary Quantization (BQ), and Scalar Quantization (SQ).
+  </Card>
+  <Card title="Model Integrations" icon="plug" href="/modules/vectorizers">
+    Integrate with 67+ vectorizer, generative, and reranker modules from OpenAI, Cohere, HuggingFace, Google, and more.
+  </Card>
+  <Card title="Production Operations" icon="server" href="/operations/replication">
+    Scale horizontally with RAFT-based clustering, replication, and automated backups to S3, GCS, or Azure.
+  </Card>
+</CardGroup>
+
+## Explore by use case
+
+<CardGroup cols={2}>
+  <Card title="Deploy with Docker" icon="docker" href="/deployment/docker">
+    Run a full Weaviate stack with embedding models using Docker Compose.
+  </Card>
+  <Card title="Deploy on Kubernetes" icon="dharmachakra" href="/deployment/kubernetes">
+    Deploy Weaviate to Kubernetes with Helm for production workloads.
+  </Card>
+  <Card title="Data Schema" icon="table" href="/data/schema">
+    Define collections, properties, data types, and vector index settings.
+  </Card>
+  <Card title="Backup & Recovery" icon="database" href="/operations/backups">
+    Configure automated backups to cloud storage with point-in-time restore.
+  </Card>
+</CardGroup>

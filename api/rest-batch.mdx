@@ -1,0 +1,413 @@
+---
+title: "Batch API"
+description: "Bulk-create objects and cross-references, or delete many objects matching a filter, using the Weaviate batch REST API."
+keywords: ["batch", "bulk", "import", "REST", "Weaviate"]
+---
+
+The Batch API lets you create or delete many objects in a single HTTP request, significantly increasing throughput compared to individual object operations.
+
+All paths are relative to `http://localhost:8080/v1`.
+
+<Tip>
+  Optimal batch sizes are typically **100–1000 objects** per request. Batches smaller than 100 leave throughput on the table; batches larger than 1000 increase memory pressure and can cause timeouts. Benchmark with your data to find the sweet spot — network latency, object size, and vectorization time all affect the ideal batch size.
+</Tip>
+
+---
+
+## Batch create objects
+
+<br />
+
+**`POST /v1/batch/objects`**
+
+Creates multiple objects in a single request. Objects from different collections can be mixed in the same batch.
+
+### Request body
+
+<ParamField body="objects" type="object[]" required>
+  Array of object definitions to create.
+  <Expandable title="object fields">
+    <ParamField body="class" type="string" required>
+      Name of the collection to create the object in.
+    </ParamField>
+    <ParamField body="properties" type="object" required>
+      Key-value map of property names and values, conforming to the collection schema.
+    </ParamField>
+    <ParamField body="id" type="string">
+      UUID for the object. Weaviate generates one if omitted. Providing deterministic UUIDs is recommended so you can update or reference objects later.
+    </ParamField>
+    <ParamField body="vector" type="number[]">
+      Pre-computed vector embedding. Omit to have the configured vectorizer compute it automatically.
+    </ParamField>
+    <ParamField body="tenant" type="string">
+      Tenant name. Required if the target collection has multi-tenancy enabled.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="fields" type="string[]">
+  Optional list of fields to return in the response. Defaults to all fields. Pass `["ALL"]` explicitly or omit to receive the full response.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="consistency_level" type="string">
+  Write consistency level. One of `ONE`, `QUORUM`, or `ALL`. Defaults to `QUORUM`.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://localhost:8080/v1/batch/objects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "objects": [
+      {
+        "class": "Article",
+        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "properties": {
+          "title": "Introduction to vector search",
+          "body": "Vector search finds semantically similar results."
+        }
+      },
+      {
+        "class": "Article",
+        "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+        "properties": {
+          "title": "What is Weaviate?",
+          "body": "Weaviate is an open-source vector database."
+        }
+      }
+    ]
+  }'
+```
+
+```python Python
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+with collection.batch.dynamic() as batch:
+    batch.add_object(properties={
+        "title": "Introduction to vector search",
+        "body": "Vector search finds semantically similar results."
+    })
+    batch.add_object(properties={
+        "title": "What is Weaviate?",
+        "body": "Weaviate is an open-source vector database."
+    })
+```
+
+</CodeGroup>
+
+### Response
+
+Returns an array with one result entry per input object, in the same order as the request.
+
+<ResponseField name="[].id" type="string">
+  UUID of the created (or attempted) object.
+</ResponseField>
+
+<ResponseField name="[].class" type="string">
+  Collection name of the object.
+</ResponseField>
+
+<ResponseField name="[].properties" type="object">
+  Stored property values for the object.
+</ResponseField>
+
+<ResponseField name="[].result" type="object" required>
+  Per-object result.
+  <Expandable title="result fields">
+    <ResponseField name="status" type="string" required>
+      `SUCCESS` if the object was created, `FAILED` if it was not.
+    </ResponseField>
+    <ResponseField name="errors" type="object">
+      Error details when `status` is `FAILED`. Contains an `error` array with `message` strings.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json
+[
+  {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "class": "Article",
+    "properties": {
+      "title": "Introduction to vector search",
+      "body": "Vector search finds semantically similar results."
+    },
+    "result": {
+      "status": "SUCCESS"
+    }
+  },
+  {
+    "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "class": "Article",
+    "properties": {
+      "title": "What is Weaviate?",
+      "body": "Weaviate is an open-source vector database."
+    },
+    "result": {
+      "status": "SUCCESS"
+    }
+  }
+]
+```
+
+<Note>
+  A `200` HTTP response does not mean every object was created successfully. Always inspect the `result.status` field for each object. Partially failed batches return `200` with individual `FAILED` entries.
+</Note>
+
+---
+
+## Batch create references
+
+<br />
+
+**`POST /v1/batch/references`**
+
+Creates cross-references between objects in bulk. Each reference links a property on a source object to a target object.
+
+### Request body
+
+An array of reference objects.
+
+<ParamField body="[].from" type="string" required>
+  URI of the source object property in the format `weaviate://localhost/{ClassName}/{id}/{propertyName}`.
+</ParamField>
+
+<ParamField body="[].to" type="string" required>
+  URI of the target object in the format `weaviate://localhost/{ClassName}/{id}`.
+</ParamField>
+
+<ParamField body="[].tenant" type="string">
+  Tenant name. Required if either collection has multi-tenancy enabled.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="consistency_level" type="string">
+  Write consistency level. One of `ONE`, `QUORUM`, or `ALL`.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://localhost:8080/v1/batch/references \
+  -H "Content-Type: application/json" \
+  -d '[
+    {
+      "from": "weaviate://localhost/Article/a1b2c3d4-e5f6-7890-abcd-ef1234567890/hasAuthor",
+      "to": "weaviate://localhost/Author/c3d4e5f6-a7b8-9012-cdef-123456789012"
+    },
+    {
+      "from": "weaviate://localhost/Article/b2c3d4e5-f6a7-8901-bcde-f12345678901/hasAuthor",
+      "to": "weaviate://localhost/Author/d4e5f6a7-b8c9-0123-defa-234567890123"
+    }
+  ]'
+```
+
+```python Python
+import weaviate
+from weaviate.classes.data import DataReference
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+collection.data.reference_add_many([
+    DataReference(
+        from_uuid="a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        from_property="hasAuthor",
+        to_uuid="c3d4e5f6-a7b8-9012-cdef-123456789012"
+    ),
+    DataReference(
+        from_uuid="b2c3d4e5-f6a7-8901-bcde-f12345678901",
+        from_property="hasAuthor",
+        to_uuid="d4e5f6a7-b8c9-0123-defa-234567890123"
+    )
+])
+```
+
+</CodeGroup>
+
+### Response
+
+Returns an array with one result entry per reference, in the same order as the request.
+
+<ResponseField name="[].from" type="string">
+  Source URI of the reference.
+</ResponseField>
+
+<ResponseField name="[].to" type="string">
+  Target URI of the reference.
+</ResponseField>
+
+<ResponseField name="[].result" type="object" required>
+  Per-reference result.
+  <Expandable title="result fields">
+    <ResponseField name="status" type="string" required>
+      `SUCCESS` or `FAILED`.
+    </ResponseField>
+    <ResponseField name="errors" type="object">
+      Error details when `status` is `FAILED`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Batch delete objects
+
+<br />
+
+**`DELETE /v1/batch/objects`**
+
+Deletes all objects in a collection that match a `where` filter. This is more efficient than fetching and deleting objects one by one.
+
+<Warning>
+  Batch delete is permanent and cannot be undone. Use `dryRun: true` to preview which objects would be deleted before committing.
+</Warning>
+
+### Request body
+
+<ParamField body="match" type="object" required>
+  Specifies which collection and filter to apply.
+  <Expandable title="match fields">
+    <ParamField body="class" type="string" required>
+      Name of the collection to delete objects from.
+    </ParamField>
+    <ParamField body="where" type="object" required>
+      Filter expression using the same `where` filter syntax as GraphQL queries. See the [Filters reference](/search/filters) for the full syntax.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="dryRun" type="boolean" default="false">
+  When `true`, returns which objects would be deleted without actually deleting them.
+</ParamField>
+
+<ParamField body="output" type="string" default="minimal">
+  Detail level in the response. `minimal` returns only counts; `verbose` includes per-object IDs and statuses.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="consistency_level" type="string">
+  Write consistency level. One of `ONE`, `QUORUM`, or `ALL`.
+</ParamField>
+
+<ParamField query="tenant" type="string">
+  Tenant name. Required if the collection has multi-tenancy enabled.
+</ParamField>
+
+<CodeGroup>
+
+```bash curl (dry run)
+curl -X DELETE http://localhost:8080/v1/batch/objects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "match": {
+      "class": "Article",
+      "where": {
+        "path": ["publishedAt"],
+        "operator": "LessThan",
+        "valueDate": "2020-01-01T00:00:00Z"
+      }
+    },
+    "dryRun": true,
+    "output": "verbose"
+  }'
+```
+
+```bash curl (delete)
+curl -X DELETE http://localhost:8080/v1/batch/objects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "match": {
+      "class": "Article",
+      "where": {
+        "path": ["publishedAt"],
+        "operator": "LessThan",
+        "valueDate": "2020-01-01T00:00:00Z"
+      }
+    },
+    "output": "minimal"
+  }'
+```
+
+```python Python
+import weaviate
+from weaviate.classes.query import Filter
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Article")
+
+result = collection.data.delete_many(
+    where=Filter.by_property("publishedAt").less_than("2020-01-01T00:00:00Z")
+)
+print(f"Deleted: {result.successful}, Failed: {result.failed}")
+```
+
+</CodeGroup>
+
+### Response
+
+<ResponseField name="match" type="object" required>
+  Echo of the `match` criteria from the request.
+</ResponseField>
+
+<ResponseField name="dryRun" type="boolean" required>
+  Whether this was a dry run.
+</ResponseField>
+
+<ResponseField name="output" type="string" required>
+  The output verbosity level used.
+</ResponseField>
+
+<ResponseField name="results" type="object" required>
+  Deletion summary.
+  <Expandable title="results fields">
+    <ResponseField name="matches" type="number" required>
+      Total number of objects matching the filter.
+    </ResponseField>
+    <ResponseField name="limit" type="number" required>
+      Maximum number of objects that can be deleted in one call (server-configured limit, typically 10 000).
+    </ResponseField>
+    <ResponseField name="successful" type="number" required>
+      Number of objects successfully deleted.
+    </ResponseField>
+    <ResponseField name="failed" type="number" required>
+      Number of objects that could not be deleted.
+    </ResponseField>
+    <ResponseField name="objects" type="object[]">
+      Per-object details. Only populated when `output` is `verbose`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json
+{
+  "match": {
+    "class": "Article",
+    "where": {
+      "path": ["publishedAt"],
+      "operator": "LessThan",
+      "valueDate": "2020-01-01T00:00:00Z"
+    }
+  },
+  "dryRun": false,
+  "output": "minimal",
+  "results": {
+    "matches": 42,
+    "limit": 10000,
+    "successful": 42,
+    "failed": 0
+  }
+}
+```
+
+<Info>
+  If `matches` exceeds the server-configured `limit`, only up to `limit` objects are deleted per call. Run the request again until `matches` is `0` to delete all matching objects across multiple pages.
+</Info>

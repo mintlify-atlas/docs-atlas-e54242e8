@@ -1,0 +1,261 @@
+---
+title: 'Docker deployment'
+description: 'Run Weaviate locally or in production using Docker and Docker Compose.'
+keywords: ['docker', 'docker compose', 'deployment', 'self-hosted', 'installation']
+---
+
+Weaviate publishes an official container image at `cr.weaviate.io/semitechnologies/weaviate`. Docker Compose is the recommended way to run Weaviate locally or on a single server.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Docker Engine" icon="docker" href="https://docs.docker.com/engine/install/">
+    Docker Engine 20.10 or later. Docker Desktop includes this on Mac and Windows.
+  </Card>
+  <Card title="Docker Compose" icon="layer-group">
+    Docker Compose v2 (`docker compose`) is bundled with Docker Desktop. On Linux, install the `docker-compose-plugin` package.
+  </Card>
+</CardGroup>
+
+## Quick start
+
+<Steps>
+  <Step title="Create a docker-compose.yml file">
+    Create a `docker-compose.yml` file in your working directory. The minimal configuration exposes the REST API on port `8080` and the gRPC API on port `50051`.
+
+    ```yaml docker-compose.yml
+    services:
+      weaviate:
+        image: cr.weaviate.io/semitechnologies/weaviate:1.36.0
+        ports:
+          - "8080:8080"
+          - "50051:50051"
+        environment:
+          AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+          PERSISTENCE_DATA_PATH: /var/lib/weaviate
+        volumes:
+          - weaviate_data:/var/lib/weaviate
+
+    volumes:
+      weaviate_data:
+    ```
+  </Step>
+
+  <Step title="Start the container">
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+
+  <Step title="Verify Weaviate is running">
+    Send a request to the meta endpoint. A successful response confirms the instance is ready.
+
+    ```bash
+    curl http://localhost:8080/v1/meta
+    ```
+
+    You should receive a JSON response with the Weaviate version, modules, and hostname.
+  </Step>
+</Steps>
+
+## Configuration variants
+
+Use the tabs below to see common Docker Compose configurations.
+
+<CodeGroup>
+
+```yaml minimal
+# Minimal single-node setup with no vectorizer
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.0
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  weaviate_data:
+```
+
+```yaml with-text2vec-model2vec
+# Weaviate with a lightweight local embedding model (text2vec-model2vec)
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.0
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      ENABLE_MODULES: text2vec-model2vec
+      DEFAULT_VECTORIZER_MODULE: text2vec-model2vec
+      MODEL2VEC_INFERENCE_API: http://text2vec-model2vec:8080
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    depends_on:
+      - text2vec-model2vec
+
+  text2vec-model2vec:
+    image: cr.weaviate.io/semitechnologies/model2vec-inference:minishlab-potion-base-32M
+
+volumes:
+  weaviate_data:
+```
+
+```yaml with-api-key-auth
+# Weaviate with API key authentication
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.0
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: "my-secret-key,another-key"
+      AUTHENTICATION_APIKEY_USERS: "user1@example.com,user2@example.com"
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: "user1@example.com"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  weaviate_data:
+```
+
+```yaml production
+# Production-ready configuration with resource limits and persistence
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.0
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: "${WEAVIATE_API_KEY}"
+      AUTHENTICATION_APIKEY_USERS: "admin@example.com"
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: "admin@example.com"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      QUERY_DEFAULTS_LIMIT: "25"
+      REPLICATION_MINIMUM_FACTOR: "1"
+      DISK_USE_WARNING_PERCENTAGE: "80"
+      DISK_USE_READONLY_PERCENTAGE: "90"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          memory: 2G
+
+volumes:
+  weaviate_data:
+    driver: local
+```
+
+</CodeGroup>
+
+## Environment variables
+
+Key environment variables for Docker deployments. See the [configuration reference](/deployment/configuration) for the full list.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED` | `true` | Allow unauthenticated requests. Set to `false` in production. |
+| `AUTHENTICATION_APIKEY_ENABLED` | `false` | Enable API key authentication. |
+| `AUTHENTICATION_APIKEY_ALLOWED_KEYS` | — | Comma-separated list of accepted API keys. |
+| `AUTHENTICATION_APIKEY_USERS` | — | Comma-separated list of user identifiers, one per key. |
+| `ENABLE_MODULES` | — | Comma-separated list of modules to load (e.g. `text2vec-model2vec`). |
+| `DEFAULT_VECTORIZER_MODULE` | `none` | Module used to vectorize objects by default. |
+| `PERSISTENCE_DATA_PATH` | `./data` | Directory for Weaviate's persistent data. |
+| `QUERY_DEFAULTS_LIMIT` | `10` | Default result limit for queries. |
+
+## Health check
+
+Weaviate exposes a readiness endpoint at `GET /v1/.well-known/ready` and a liveness endpoint at `GET /v1/.well-known/live`. Use these in your health check configuration:
+
+```yaml docker-compose.yml (health check snippet)
+healthcheck:
+  test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/v1/.well-known/ready"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+```
+
+You can also query the meta endpoint for human-readable status:
+
+```bash
+curl http://localhost:8080/v1/meta
+```
+
+## Persistent storage
+
+Data is stored at the path set by `PERSISTENCE_DATA_PATH`. Always mount a named volume or a host path at that location to preserve data across container restarts.
+
+<Warning>
+If you remove the container without a volume mount, all stored data and schema will be lost.
+</Warning>
+
+```yaml docker-compose.yml (volume snippet)
+services:
+  weaviate:
+    environment:
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  weaviate_data:
+```
+
+On Linux, using a named Docker volume gives better I/O performance than a bind mount to a host directory.
+
+## Production tips
+
+<AccordionGroup>
+  <Accordion title="Disable anonymous access">
+    Set `AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"` and configure either API key or OIDC authentication. See the [configuration reference](/deployment/configuration) for authentication options.
+  </Accordion>
+
+  <Accordion title="Set resource limits">
+    Use Docker Compose `deploy.resources.limits` to cap CPU and memory. Weaviate's HNSW index is memory-intensive; allocate at least 2x the size of your vector data as memory headroom.
+  </Accordion>
+
+  <Accordion title="Monitor disk usage">
+    Set `DISK_USE_WARNING_PERCENTAGE` (default: 80) and `DISK_USE_READONLY_PERCENTAGE` (default: 90). When disk usage exceeds the readonly threshold, Weaviate stops accepting writes to prevent data corruption.
+  </Accordion>
+
+  <Accordion title="Use restart policies">
+    Add `restart: unless-stopped` to the Weaviate service to automatically recover from crashes or host reboots.
+  </Accordion>
+
+  <Accordion title="Separate your API key from the Compose file">
+    Store secrets in a `.env` file or use Docker secrets. Reference them with `${VARIABLE_NAME}` in `docker-compose.yml` and add the `.env` file to `.gitignore`.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration reference" icon="sliders" href="/deployment/configuration">
+    Full list of environment variables and their defaults.
+  </Card>
+  <Card title="Kubernetes deployment" icon="server" href="/deployment/kubernetes">
+    Deploy a multi-node Weaviate cluster with Helm.
+  </Card>
+</CardGroup>

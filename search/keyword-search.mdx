@@ -1,0 +1,216 @@
+---
+title: 'Keyword search (BM25)'
+description: 'Search by exact term matching using the BM25 ranking algorithm over the inverted index.'
+keywords: ['BM25', 'keyword search', 'full-text search', 'inverted index', 'term frequency', 'tokenization']
+---
+
+BM25 (Best Match 25) is a bag-of-words ranking algorithm based on term frequency and inverse document frequency (TF-IDF). Weaviate builds an inverted index over text properties and uses BM25 to score objects by how well their stored text matches the query terms.
+
+Use keyword search when you need exact term matching — for example, looking up a product SKU, a person's name, or a specific technical term where semantic substitution is not desirable.
+
+## Basic usage
+
+<CodeGroup>
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.query.bm25(
+    query="large language models",
+    limit=10,
+    return_metadata=wvc.query.MetadataQuery(score=True),
+)
+
+for obj in results.objects:
+    print(obj.properties["title"], obj.metadata.score)
+
+client.close()
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          bm25: { query: \"large language models\" }
+          limit: 10
+        ) {
+          title
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## Tokenization
+
+Tokenization controls how text is split before indexing and querying. It is set per property in the collection schema.
+
+| Mode | Behavior |
+|---|---|
+| `word` | Splits on non-alphanumeric characters; lowercases tokens. Default for `text` properties |
+| `lowercase` | Same as `word` but preserves all characters between whitespace, then lowercases |
+| `whitespace` | Splits on whitespace only; preserves case |
+| `field` | Treats the entire field value as a single token; useful for codes and identifiers |
+
+```python python
+import weaviate.classes as wvc
+
+# Set tokenization when creating a collection
+client.collections.create(
+    name="Product",
+    properties=[
+        wvc.config.Property(
+            name="name",
+            data_type=wvc.config.DataType.TEXT,
+            tokenization=wvc.config.Tokenization.WORD,
+        ),
+        wvc.config.Property(
+            name="sku",
+            data_type=wvc.config.DataType.TEXT,
+            tokenization=wvc.config.Tokenization.FIELD,
+        ),
+    ],
+)
+```
+
+<Note>
+Tokenization is an index-time setting. Changing it after data has been imported requires re-indexing the affected property.
+</Note>
+
+## Targeting specific properties
+
+By default, BM25 searches all `text` and `text[]` properties that have a searchable index. Pass `query_properties` to restrict the search to specific properties.
+
+<CodeGroup>
+
+```python python
+results = collection.query.bm25(
+    query="large language models",
+    query_properties=["title", "abstract"],
+    limit=10,
+)
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          bm25: {
+            query: \"large language models\"
+            properties: [\"title\", \"abstract\"]
+          }
+          limit: 10
+        ) {
+          title
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## Property boost
+
+Add a `^` multiplier after a property name to increase its weight in the BM25 score. A property with `^2` contributes twice as much to the score as one without a multiplier.
+
+```python python
+results = collection.query.bm25(
+    query="attention mechanism",
+    query_properties=["title^3", "abstract^1.5", "body"],
+    limit=10,
+)
+```
+
+## Filtering BM25 results
+
+Apply a `Filter` to restrict the set of objects before BM25 scoring. Only objects that pass the filter are searched.
+
+<CodeGroup>
+
+```python python
+from weaviate.classes.query import Filter
+
+results = collection.query.bm25(
+    query="reinforcement learning",
+    filters=Filter.by_property("year").greater_than(2020),
+    limit=10,
+)
+```
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          bm25: { query: \"reinforcement learning\" }
+          where: { path: [\"year\"], operator: GreaterThan, valueInt: 2020 }
+          limit: 10
+        ) {
+          title
+          year
+          _additional { score }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## Searchable index
+
+A property is only eligible for BM25 if it has a searchable index. For `text` and `text[]` properties, this is enabled by default. You can disable it to save index space for properties you never search.
+
+```python python
+wvc.config.Property(
+    name="internalNotes",
+    data_type=wvc.config.DataType.TEXT,
+    index_searchable=False,  # excluded from BM25 and hybrid BM25
+    index_filterable=True,   # still filterable
+)
+```
+
+<Note>
+Properties with `index_searchable=False` are silently skipped when listed in `query_properties`. No error is raised.
+</Note>
+
+## When to use BM25
+
+- **Known-item search**: users know what they are looking for and type the exact term.
+- **Code or identifier lookup**: product SKUs, document IDs, model names.
+- **Domain-specific jargon**: terms where a synonym is wrong, not just different.
+- **Debugging relevance**: BM25 scores are explainable via term frequency counts.
+
+For queries that benefit from semantic understanding, use [vector search](/search/vector-search) or [hybrid search](/search/hybrid-search) instead.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Combine BM25 with vector search using the alpha parameter.
+  </Card>
+  <Card title="Filters" icon="filter" href="/search/filters">
+    Pre-filter objects by property values before BM25 scoring.
+  </Card>
+  <Card title="Vector search" icon="magnifying-glass" href="/search/vector-search">
+    Semantic similarity search with near_text, near_vector, and more.
+  </Card>
+</CardGroup>

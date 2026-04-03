@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Weaviate",
+  "projectType": "data-platform",
+  "projectName": "Weaviate",
+  "projectDescription": "An open-source, cloud-native vector database that combines vector similarity search with structured filtering, hybrid search, and integrated RAG capabilities for AI-powered applications.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#f4fcfc",
-    "light": "#b3cb0d",
-    "dark": "#119c53"
-  },
-  "favicon": "https://media.brand.dev/37b32103-7feb-4bbc-8aba-9a09bb443323.jpg",
-  "logo": {
-    "light": "https://media.brand.dev/a68523b3-9633-4132-ac24-bbb199239c56.svg",
-    "dark": "https://media.brand.dev/a68523b3-9633-4132-ac24-bbb199239c56.svg"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/weaviate/weaviate"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/weaviate/weaviate"
-    }
-  },
+  "primaryColor": "#f4fcfc",
+  "lightColor": "#b3cb0d",
+  "darkColor": "#119c53",
   "navigation": {
     "tabs": [
       {
@@ -115,5 +98,31 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "HNSW vector index with PQ/BQ/SQ compression for fast approximate nearest-neighbor search",
+    "Hybrid search combining vector similarity and BM25 keyword search in a single query",
+    "Integrated RAG (retrieval-augmented generation) with 67+ model provider modules",
+    "Multi-tenancy with per-tenant data isolation and RBAC authorization",
+    "Horizontal scaling with distributed RAFT consensus and shard replication",
+    "REST, gRPC, and GraphQL APIs with client libraries for Python, JS/TS, Go, Java, and C#",
+    "Automatic vectorization at import time with providers like OpenAI, Cohere, HuggingFace, Google",
+    "Object TTL for automatic data expiry and built-in backup to S3, GCS, and Azure"
+  ],
+  "publicApiSurface": [
+    "GET/POST /v1/objects — CRUD for data objects",
+    "GET/POST /v1/schema — Collection schema management",
+    "POST /v1/batch/objects — Batch object import",
+    "POST /v1/batch/references — Batch reference import",
+    "POST /v1/graphql — GraphQL query interface",
+    "GET /v1/nodes — Cluster node status",
+    "GET /v1/meta — Server metadata and module info",
+    "gRPC Weaviate.Search — Vector, hybrid, BM25 search",
+    "gRPC Weaviate.BatchObjects — High-throughput batch import",
+    "gRPC Weaviate.Aggregate — Aggregation queries",
+    "gRPC Weaviate.TenantsGet — Multi-tenancy management",
+    "GraphQL Get{} — Object retrieval with nearText/nearVector/hybrid",
+    "GraphQL Aggregate{} — Statistical aggregation",
+    "GraphQL Explore{} — Cross-collection vector exploration"
+  ]
 }

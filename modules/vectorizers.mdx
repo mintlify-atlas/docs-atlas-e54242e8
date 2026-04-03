@@ -1,0 +1,254 @@
+---
+title: "Vectorizer modules"
+description: "Convert text and images to vector embeddings automatically at import and query time using Weaviate's built-in vectorizer modules."
+keywords: ["vectorizer", "embeddings", "text2vec", "multi2vec", "img2vec", "modules", "openai", "cohere", "huggingface"]
+---
+
+Vectorizer modules integrate with embedding models to automatically generate vector representations of your data. When you insert an object, Weaviate sends the configured properties to the vectorizer and stores the resulting embedding alongside the object. When you run a `nearText` or `nearImage` query, Weaviate vectorizes the query using the same module so distances are computed in the same space.
+
+## How vectorizers work
+
+Vectorizers operate at two points in the data lifecycle:
+
+1. **Import time** — When you insert an object, Weaviate extracts the text from properties marked for vectorization and sends them to the embedding model API. The returned vector is stored in the HNSW or flat index alongside the object.
+2. **Query time** — When you run a `nearText` or `nearImage` query, Weaviate vectorizes the query string with the same module. This ensures that the query vector lives in the same embedding space as the stored vectors, making distance comparisons meaningful.
+
+When no vectorizer is configured (`none`), you must supply the vector yourself with each inserted object and each query.
+
+## Enabling a vectorizer module
+
+Set the `ENABLE_MODULES` environment variable when starting Weaviate, then configure the module per collection in the schema.
+
+```bash
+docker run -p 8080:8080 -p 50051:50051 \
+  -e ENABLE_MODULES=text2vec-openai \
+  -e OPENAI_APIKEY=your-api-key \
+  cr.weaviate.io/semitechnologies/weaviate:latest
+```
+
+You can enable multiple modules at once by separating them with commas:
+
+```bash
+-e ENABLE_MODULES=text2vec-openai,text2vec-cohere,multi2vec-clip
+```
+
+## Text vectorizers
+
+Text vectorizers convert string properties to dense vector embeddings.
+
+<Tabs>
+  <Tab title="Cloud APIs">
+    | Module | Provider | API key env var |
+    |--------|----------|-----------------|
+    | `text2vec-openai` | OpenAI / Azure OpenAI | `OPENAI_APIKEY` / `AZURE_APIKEY` |
+    | `text2vec-cohere` | Cohere | `COHERE_APIKEY` |
+    | `text2vec-huggingface` | HuggingFace Inference API | `HUGGINGFACE_APIKEY` |
+    | `text2vec-google` | Google (Vertex AI / AI Studio) | `GOOGLE_APIKEY` |
+    | `text2vec-aws` | AWS Bedrock | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+    | `text2vec-jinaai` | Jina AI | `JINAAI_APIKEY` |
+    | `text2vec-mistral` | Mistral AI | `MISTRAL_APIKEY` |
+    | `text2vec-nvidia` | NVIDIA AI | `NVIDIA_APIKEY` |
+    | `text2vec-voyageai` | Voyage AI | `VOYAGEAI_APIKEY` |
+    | `text2vec-ollama` | Ollama (local endpoint) | — |
+    | `text2vec-databricks` | Databricks | `DATABRICKS_TOKEN` |
+    | `text2vec-octoai` | OctoAI | `OCTOAI_APIKEY` |
+    | `text2vec-weaviate` | Weaviate Embeddings | `WEAVIATE_APIKEY` |
+  </Tab>
+  <Tab title="Self-hosted">
+    | Module | Description | Config |
+    |--------|-------------|--------|
+    | `text2vec-transformers` | Run any HuggingFace Sentence Transformers model locally | `TRANSFORMERS_INFERENCE_API` |
+    | `text2vec-model2vec` | Lightweight static embeddings, no GPU required | `MODEL2VEC_INFERENCE_API` |
+    | `text2vec-contextionary` | Weaviate's own contextionary model | `CONTEXTIONARY_URL` |
+    | `text2vec-gpt4all` | GPT4All local inference | `GPT4ALL_INFERENCE_API` |
+  </Tab>
+</Tabs>
+
+## Multi-modal vectorizers
+
+Multi-modal vectorizers handle both text and image inputs in a shared embedding space, enabling cross-modal search.
+
+<Tabs>
+  <Tab title="Cloud APIs">
+    | Module | Provider | Modalities |
+    |--------|----------|------------|
+    | `multi2vec-cohere` | Cohere | Text + image |
+    | `multi2vec-google` | Google (Vertex AI) | Text + image |
+    | `multi2vec-jinaai` | Jina AI | Text + image |
+    | `multi2vec-nvidia` | NVIDIA | Text + image |
+    | `multi2vec-voyageai` | Voyage AI | Text + image |
+    | `multi2vec-aws` | AWS Bedrock | Text + image |
+    | `multi2vec-weaviate` | Weaviate Embeddings | Text + image |
+  </Tab>
+  <Tab title="Self-hosted">
+    | Module | Description |
+    |--------|-------------|
+    | `multi2vec-clip` | OpenAI CLIP model for text and image in one space |
+    | `multi2vec-bind` | ImageBind model supporting text, image, audio, video, depth, and IMU |
+  </Tab>
+</Tabs>
+
+## Image vectorizer
+
+The `img2vec-neural` module vectorizes images only, using a neural network image encoder deployed locally.
+
+| Module | Description | Config |
+|--------|-------------|--------|
+| `img2vec-neural` | Encode images to vectors using a local ResNet model | `IMAGE_INFERENCE_API` |
+
+## Configuring a vectorizer in a collection
+
+Specify the vectorizer when you create a collection. The configuration is stored in the schema and applied to every object imported into that collection.
+
+<AccordionGroup>
+  <Accordion title="OpenAI (text2vec-openai)">
+    ```python
+    import weaviate
+    from weaviate.classes.config import Configure, Property, DataType
+
+    client = weaviate.connect_to_local()
+
+    client.collections.create(
+        name="Article",
+        properties=[
+            Property(name="title", data_type=DataType.TEXT),
+            Property(name="body", data_type=DataType.TEXT),
+        ],
+        vector_config=Configure.Vectors.text2vec_openai(
+            model="text-embedding-3-small",
+        ),
+    )
+    ```
+
+    Set your API key before starting Weaviate:
+
+    ```bash
+    export OPENAI_APIKEY=sk-...
+    ```
+  </Accordion>
+
+  <Accordion title="Cohere (text2vec-cohere)">
+    ```python
+    client.collections.create(
+        name="Article",
+        properties=[
+            Property(name="title", data_type=DataType.TEXT),
+            Property(name="body", data_type=DataType.TEXT),
+        ],
+        vector_config=Configure.Vectors.text2vec_cohere(
+            model="embed-english-v3.0",
+        ),
+    )
+    ```
+
+    ```bash
+    export COHERE_APIKEY=...
+    ```
+  </Accordion>
+
+  <Accordion title="HuggingFace (text2vec-huggingface)">
+    ```python
+    client.collections.create(
+        name="Article",
+        properties=[
+            Property(name="title", data_type=DataType.TEXT),
+            Property(name="body", data_type=DataType.TEXT),
+        ],
+        vector_config=Configure.Vectors.text2vec_huggingface(
+            model="sentence-transformers/all-MiniLM-L6-v2",
+        ),
+    )
+    ```
+
+    ```bash
+    export HUGGINGFACE_APIKEY=hf_...
+    ```
+  </Accordion>
+
+  <Accordion title="Self-hosted Transformers (text2vec-transformers)">
+    Run a Sentence Transformers model as a sidecar container and point Weaviate at it:
+
+    ```yaml
+    services:
+      weaviate:
+        image: cr.weaviate.io/semitechnologies/weaviate:latest
+        environment:
+          ENABLE_MODULES: text2vec-transformers
+          TRANSFORMERS_INFERENCE_API: http://t2v-transformers:8080
+      t2v-transformers:
+        image: cr.weaviate.io/semitechnologies/transformers-inference:sentence-transformers-multi-qa-MiniLM-L6-cos-v1
+    ```
+
+    ```python
+    client.collections.create(
+        name="Article",
+        properties=[
+            Property(name="title", data_type=DataType.TEXT),
+            Property(name="body", data_type=DataType.TEXT),
+        ],
+        vector_config=Configure.Vectors.text2vec_transformers(),
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="CLIP multi-modal (multi2vec-clip)">
+    ```python
+    from weaviate.classes.config import Configure, Property, DataType, Multi2VecField
+
+    client.collections.create(
+        name="Media",
+        properties=[
+            Property(name="caption", data_type=DataType.TEXT),
+            Property(name="image", data_type=DataType.BLOB),
+        ],
+        vector_config=Configure.Vectors.multi2vec_clip(
+            text_fields=[Multi2VecField(name="caption")],
+            image_fields=[Multi2VecField(name="image")],
+        ),
+    )
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## API key configuration
+
+Pass API keys as environment variables when starting Weaviate. Never hard-code keys in your schema or application code.
+
+```bash
+docker run -p 8080:8080 -p 50051:50051 \
+  -e ENABLE_MODULES=text2vec-openai,generative-openai \
+  -e OPENAI_APIKEY=sk-... \
+  cr.weaviate.io/semitechnologies/weaviate:latest
+```
+
+You can also pass a key per-request in the client if you want users to supply their own keys:
+
+```python
+import weaviate
+from weaviate.classes.init import Auth
+
+client = weaviate.connect_to_local(
+    headers={"X-OpenAI-Api-Key": "sk-..."}
+)
+```
+
+<Note>
+  Weaviate reads API keys from environment variables at startup. If you rotate a key, restart the Weaviate container with the new value.
+</Note>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Generative modules" icon="robot" href="/modules/generative">
+    Configure LLM providers for retrieval-augmented generation.
+  </Card>
+  <Card title="Vector search" icon="magnifying-glass" href="/search/vector-search">
+    Run nearText and nearVector queries against your collections.
+  </Card>
+  <Card title="Collection schema" icon="table" href="/data/schema">
+    Define properties, data types, and vector index settings.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Configure modules in a Docker Compose stack.
+  </Card>
+</CardGroup>

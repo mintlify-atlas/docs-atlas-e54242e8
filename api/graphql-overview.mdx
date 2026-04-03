@@ -1,0 +1,183 @@
+---
+title: "GraphQL API overview"
+description: "Overview of the Weaviate GraphQL API: endpoint, request format, root operations, authentication, and when to use it."
+keywords: ["GraphQL", "Get", "Aggregate", "Explore", "query", "endpoint"]
+---
+
+The Weaviate GraphQL API provides a flexible query interface for retrieving, searching, and aggregating data. All queries are sent as HTTP POST requests to a single endpoint.
+
+<Note>
+  For high-throughput production search, the [gRPC API](/api/grpc-overview) offers lower latency and smaller payloads. GraphQL is well-suited for exploration, ad-hoc queries, and tooling integrations.
+</Note>
+
+## Endpoint
+
+```
+POST /v1/graphql
+```
+
+All GraphQL queries are sent to this single endpoint regardless of operation type.
+
+## Request format
+
+Send a JSON body with a `query` key containing your GraphQL query string.
+
+```bash curl
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{ Get { Article(limit: 5) { title _additional { id } } } }"
+  }'
+```
+
+You can also include `operationName` and `variables`:
+
+```bash curl with variables
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query GetArticles($limit: Int) { Get { Article(limit: $limit) { title } } }",
+    "operationName": "GetArticles",
+    "variables": { "limit": 10 }
+  }'
+```
+
+## Authentication
+
+Pass your API key in the `Authorization` header exactly as you would for REST requests.
+
+```bash authenticated request
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{ "query": "{ Get { Article(limit: 1) { title } } }" }'
+```
+
+Anonymous access is allowed when authentication is disabled (default for local deployments).
+
+## Root operations
+
+The Weaviate GraphQL schema exposes three root-level query fields:
+
+### Get
+
+Retrieve objects from a collection, optionally applying vector, keyword, hybrid, or filtered search. This is the most commonly used operation.
+
+```graphql get example
+{
+  Get {
+    Article(limit: 10) {
+      title
+      content
+      _additional {
+        id
+        distance
+      }
+    }
+  }
+}
+```
+
+See the [GraphQL Get reference](/api/graphql-get) for the full argument list.
+
+### Aggregate
+
+Compute statistical summaries over a collection or a filtered subset. Returns counts, sums, means, and more by property type.
+
+```graphql aggregate example
+{
+  Aggregate {
+    Article {
+      meta {
+        count
+      }
+      year {
+        mean
+        maximum
+        minimum
+      }
+    }
+  }
+}
+```
+
+See the [GraphQL Aggregate reference](/api/graphql-aggregate) for all aggregation options.
+
+### Explore
+
+Perform cross-collection vector search without specifying a collection name. Returns beacons (links) to matching objects. Useful for exploring data across multiple collections.
+
+```graphql explore example
+{
+  Explore(
+    nearText: { concepts: ["renewable energy"] }
+    limit: 5
+  ) {
+    beacon
+    className
+    certainty
+  }
+}
+```
+
+## GraphQL playground
+
+When the Weaviate instance has the playground enabled, navigate to `/v1/graphql` in your browser to open an interactive GraphQL editor with schema introspection. This is useful for exploring the available collections and arguments during development.
+
+## Introspection
+
+Weaviate supports standard GraphQL introspection. You can query the schema to discover all available types, fields, and arguments.
+
+```graphql introspection query
+{
+  __schema {
+    queryType {
+      name
+    }
+    types {
+      name
+      kind
+    }
+  }
+}
+```
+
+## Content-type
+
+Set `Content-Type: application/json` on all requests. The response is always `application/json`.
+
+## Error handling
+
+GraphQL errors are returned in the `errors` array of the response body, not as HTTP error codes. A `200 OK` response may still contain errors.
+
+```json error response example
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "collection 'Missing' does not exist",
+      "locations": [{ "line": 1, "column": 8 }],
+      "path": ["Get", "Missing"]
+    }
+  ]
+}
+```
+
+Authentication and authorization failures return `401` and `403` HTTP status codes respectively, without a JSON body.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="GraphQL Get" icon="magnifying-glass" href="/api/graphql-get">
+    Full reference for Get queries: search operators, filters, pagination, and generative.
+  </Card>
+  <Card title="GraphQL Aggregate" icon="chart-bar" href="/api/graphql-aggregate">
+    Statistical aggregations by property type with groupBy and filters.
+  </Card>
+  <Card title="gRPC overview" icon="bolt" href="/api/grpc-overview">
+    The gRPC API for high-throughput production search.
+  </Card>
+  <Card title="REST API overview" icon="plug" href="/api/rest-overview">
+    REST endpoints for schema, objects, and backups.
+  </Card>
+</CardGroup>

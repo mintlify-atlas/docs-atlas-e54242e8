@@ -1,0 +1,141 @@
+---
+title: "REST API overview"
+description: "Overview of the Weaviate REST API, authentication, base URL, endpoint groups, and error handling."
+keywords: ["REST API", "Weaviate API", "HTTP", "endpoints"]
+---
+
+The Weaviate REST API exposes a stable `v1` interface for managing collections, objects, batch operations, backups, and cluster information over plain HTTP/JSON.
+
+## Base URL
+
+```
+http://localhost:8080/v1
+```
+
+When connecting to Weaviate Cloud or a remote deployment, replace `localhost:8080` with your instance hostname. All paths below are relative to this base URL.
+
+## Authentication
+
+Pass a Bearer token in the `Authorization` header. Anonymous access is allowed when authentication is disabled (default for local instances).
+
+<CodeGroup>
+
+```bash curl (authenticated)
+curl -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     http://localhost:8080/v1/meta
+```
+
+```bash curl (anonymous)
+curl -H "Content-Type: application/json" \
+     http://localhost:8080/v1/meta
+```
+
+</CodeGroup>
+
+<Info>
+  When using Weaviate Cloud, generate an API key from the **Console → API Keys** page and pass it as the Bearer token.
+</Info>
+
+## Content type
+
+All request and response bodies use `application/json`. Set the `Content-Type: application/json` header on every request that includes a body.
+
+## Endpoint groups
+
+<CardGroup cols={2}>
+  <Card title="Objects" icon="cube" href="/api/rest-objects">
+    Create, read, update, delete, and check individual objects. Supports cursor-based pagination and consistency levels.
+  </Card>
+  <Card title="Schema" icon="table" href="/api/rest-schema">
+    Manage collections (classes): create, get, list, update config, delete, and add properties.
+  </Card>
+  <Card title="Batch" icon="layer-group" href="/api/rest-batch">
+    Bulk-create objects and cross-references, or delete many objects matching a filter in a single request.
+  </Card>
+  <Card title="GraphQL" icon="brackets-curly" href="/api/graphql-overview">
+    Execute `Get`, `Aggregate`, and `Explore` queries through the `/v1/graphql` endpoint.
+  </Card>
+  <Card title="Backups" icon="floppy-disk" href="/operations/backups">
+    Trigger and restore collection backups via `/v1/backups`.
+  </Card>
+  <Card title="Nodes & meta" icon="circle-nodes" href="/api/rest-overview">
+    Query cluster node info (`/v1/nodes`) and server metadata (`/v1/meta`).
+  </Card>
+</CardGroup>
+
+### All endpoint paths
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/objects` | Create an object |
+| `GET` | `/v1/objects/{className}/{id}` | Get an object |
+| `GET` | `/v1/objects` | List objects |
+| `PATCH` | `/v1/objects/{className}/{id}` | Partially update an object |
+| `PUT` | `/v1/objects/{className}/{id}` | Replace an object |
+| `DELETE` | `/v1/objects/{className}/{id}` | Delete an object |
+| `HEAD` | `/v1/objects/{className}/{id}` | Check object existence |
+| `POST` | `/v1/schema` | Create a collection |
+| `GET` | `/v1/schema/{className}` | Get a collection |
+| `GET` | `/v1/schema` | List all collections |
+| `PUT` | `/v1/schema/{className}` | Update collection config |
+| `DELETE` | `/v1/schema/{className}` | Delete a collection |
+| `POST` | `/v1/schema/{className}/properties` | Add a property |
+| `POST` | `/v1/batch/objects` | Batch create objects |
+| `POST` | `/v1/batch/references` | Batch create references |
+| `DELETE` | `/v1/batch/objects` | Batch delete objects by filter |
+| `POST` | `/v1/graphql` | Execute a GraphQL query |
+| `POST` | `/v1/backups/{backend}` | Create a backup |
+| `GET` | `/v1/backups/{backend}/{id}` | Get backup status |
+| `POST` | `/v1/backups/{backend}/{id}/restore` | Restore a backup |
+| `GET` | `/v1/nodes` | Get cluster node info |
+| `GET` | `/v1/meta` | Get server metadata |
+| `GET` | `/v1/.well-known/live` | Liveness probe |
+| `GET` | `/v1/.well-known/ready` | Readiness probe |
+
+## HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200` | Request succeeded with a response body |
+| `201` | Resource created |
+| `204` | Request succeeded with no response body (e.g., delete) |
+| `400` | Bad request — malformed query parameter or body |
+| `401` | Unauthorized — missing or invalid credentials |
+| `403` | Forbidden — valid credentials but insufficient permissions |
+| `404` | Not found — resource does not exist |
+| `409` | Conflict — resource already exists (e.g., duplicate collection name) |
+| `422` | Unprocessable entity — request is structurally valid but fails validation |
+| `500` | Internal server error |
+
+## Error response format
+
+All error responses follow the same envelope format:
+
+```json
+{
+  "error": [
+    {
+      "message": "class 'Article' already exists"
+    }
+  ]
+}
+```
+
+The `error` array may contain multiple messages when multiple validation issues are detected in a single request.
+
+## Versioning
+
+The `/v1` path prefix indicates the stable API version. Breaking changes will be introduced under a new version prefix. The current API version and Weaviate server version are both returned by `GET /v1/meta`.
+
+```bash
+curl http://localhost:8080/v1/meta
+```
+
+```json
+{
+  "version": "1.28.0",
+  "modules": { ... },
+  "hostname": "http://localhost:8080"
+}
+```

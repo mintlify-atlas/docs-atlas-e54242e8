@@ -1,0 +1,191 @@
+---
+title: 'Reranking'
+description: 'Improve search precision by re-scoring an initial candidate set with a cross-encoder model before returning final results.'
+keywords: ['reranking', 'cross-encoder', 'two-stage retrieval', 'cohere rerank', 'jina rerank', 'voyage rerank']
+---
+
+Reranking is a two-stage retrieval pattern. In the first stage, Weaviate retrieves a broad set of candidate objects using a fast retrieval method (vector, BM25, or hybrid). In the second stage, a cross-encoder model re-scores each candidate against the original query and re-orders the results for higher precision.
+
+Cross-encoders read the query and the document together, capturing finer-grained relevance signals that bi-encoder vector models miss. The tradeoff is latency: cross-encoders are slower and are only practical on a bounded candidate set, not an entire collection.
+
+## Supported reranker modules
+
+| Module | Provider |
+|---|---|
+| `reranker-cohere` | Cohere Rerank API |
+| `reranker-jinaai` | Jina AI Rerank API |
+| `reranker-voyageai` | Voyage AI Rerank API |
+| `reranker-transformers` | Self-hosted cross-encoder via Weaviate inference container |
+
+## Setup workflow
+
+<Steps>
+  <Step title="Enable the reranker module">
+
+Add the reranker module to your Weaviate instance. For Weaviate Cloud, enable it in the cluster configuration. For Docker or Kubernetes deployments, include the module in your `ENABLE_MODULES` environment variable and provide the required API key.
+
+```bash docker
+# Example environment variables in docker-compose.yml
+ENABLE_MODULES: "text2vec-openai,reranker-cohere"
+COHERE_APIKEY: "${COHERE_APIKEY}"
+```
+
+  </Step>
+  <Step title="Configure the reranker in the collection schema">
+
+Set the reranker module in the collection's `reranker_config`. This determines which module and model are used when a `rerank` parameter is added to a query.
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+
+client = weaviate.connect_to_local()
+
+client.collections.create(
+    name="Article",
+    reranker_config=wvc.config.Configure.Reranker.cohere(
+        model="rerank-english-v3.0",
+    ),
+    vectorizer_config=wvc.config.Configure.Vectorizer.text2vec_openai(),
+    properties=[
+        wvc.config.Property(name="title", data_type=wvc.config.DataType.TEXT),
+        wvc.config.Property(name="abstract", data_type=wvc.config.DataType.TEXT),
+    ],
+)
+
+client.close()
+```
+
+  </Step>
+  <Step title="Add rerank to a query">
+
+Pass a `Rerank` object to any search query. Specify the property to rerank on (`prop`) and optionally an explicit reranking query (`query`). If `query` is omitted, the original search query is reused.
+
+```python python
+import weaviate
+import weaviate.classes as wvc
+from weaviate.classes.query import Rerank
+
+client = weaviate.connect_to_local()
+
+collection = client.collections.get("Article")
+
+results = collection.query.near_text(
+    query="transformer attention mechanism",
+    limit=25,           # retrieve more candidates for the reranker
+    rerank=Rerank(
+        prop="abstract",
+        query="how does attention work in transformers",
+    ),
+    return_metadata=wvc.query.MetadataQuery(rerank_score=True),
+)
+
+# Results are now ordered by the cross-encoder rerank score
+for obj in results.objects:
+    print(obj.properties["title"], obj.metadata.rerank_score)
+
+client.close()
+```
+
+  </Step>
+</Steps>
+
+<Note>
+The reranker module must be configured in the collection schema before the `rerank` parameter takes effect. Sending `rerank` without a configured module returns an error.
+</Note>
+
+## Using reranking with different search types
+
+Reranking works with any Weaviate search operator.
+
+<CodeGroup>
+
+```python python
+from weaviate.classes.query import Rerank
+
+# Rerank over hybrid results
+results = collection.query.hybrid(
+    query="electric vehicle battery technology",
+    alpha=0.5,
+    limit=20,
+    rerank=Rerank(prop="abstract"),
+    return_metadata=wvc.query.MetadataQuery(rerank_score=True),
+)
+
+# Rerank over BM25 results
+results = collection.query.bm25(
+    query="solid-state battery",
+    limit=20,
+    rerank=Rerank(prop="abstract"),
+    return_metadata=wvc.query.MetadataQuery(rerank_score=True),
+)
+```
+
+```bash curl
+# Rerank with GraphQL (hybrid example)
+curl -X POST http://localhost:8080/v1/graphql \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{
+      Get {
+        Article(
+          hybrid: { query: \"electric vehicle battery technology\", alpha: 0.5 }
+          limit: 20
+          rerank: { property: \"abstract\" }
+        ) {
+          title
+          abstract
+          _additional { rerankScore }
+        }
+      }
+    }"
+  }'
+```
+
+</CodeGroup>
+
+## The rerank score
+
+The `rerank_score` metadata field contains the cross-encoder's relevance score for each object. Higher scores indicate greater relevance. Results are sorted by `rerank_score` descending after reranking completes.
+
+```python python
+return_metadata=wvc.query.MetadataQuery(rerank_score=True)
+```
+
+The original vector distance or BM25 score is still available if you also request it:
+
+```python python
+return_metadata=wvc.query.MetadataQuery(distance=True, rerank_score=True)
+```
+
+## How reranking improves precision
+
+| Stage | Method | Strength |
+|---|---|---|
+| First-stage retrieval | Vector / BM25 / hybrid | Fast; scales to millions of objects |
+| Second-stage reranking | Cross-encoder | Accurate; reads query and document together |
+
+The cross-encoder sees both the query and the full document text simultaneously, allowing it to catch relevance nuances that embedding similarity misses — for example, recognizing that a document answers the implicit intent behind a query, not just the surface terms.
+
+## Performance considerations
+
+Reranking adds latency proportional to the number of candidates retrieved in the first stage. Keep the first-stage `limit` only as large as necessary for the reranker to have a meaningful candidate set. Values between 20 and 100 are typical.
+
+If latency is critical, consider using a smaller or faster reranker model (many providers offer speed-optimized variants), or reduce the first-stage limit.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Reranker modules" icon="arrow-up-down" href="/modules/rerankers">
+    Configure Cohere, Jina AI, Voyage AI, and Transformers reranker modules.
+  </Card>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Combine BM25 and vector search to build a strong first-stage candidate set.
+  </Card>
+  <Card title="Vector search" icon="magnifying-glass" href="/search/vector-search">
+    Retrieve candidates with near_text, near_vector, and near_object.
+  </Card>
+  <Card title="Generative search (RAG)" icon="robot" href="/search/generative-rag">
+    Pass reranked results to an LLM for grounded response generation.
+  </Card>
+</CardGroup>

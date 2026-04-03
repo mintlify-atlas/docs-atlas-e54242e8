@@ -1,0 +1,331 @@
+---
+title: 'Managing objects'
+description: 'Create, read, update, and delete objects in Weaviate, including batch import, cross-references, and TTL configuration.'
+keywords: ['crud', 'objects', 'insert', 'batch', 'delete', 'update', 'cross-reference', 'ttl']
+---
+
+Objects in Weaviate store your data as JSON-like documents, each with a unique UUID, a set of properties matching the collection schema, and an optional vector.
+
+<Note>
+UUIDs are auto-generated as UUIDv4 if you do not supply one. You can provide a deterministic UUID to make it easier to reference objects across systems — Weaviate will use it as-is.
+</Note>
+
+## Create (single object)
+
+Use `collection.data.insert()` to add one object at a time. The method returns the UUID of the created object.
+
+```python
+import weaviate
+
+client = weaviate.connect_to_local()
+
+articles = client.collections.get("Article")
+
+uuid = articles.data.insert(
+    properties={
+        "title": "Vector databases explained",
+        "body": "A vector database stores high-dimensional vectors...",
+        "wordCount": 850,
+        "isPublished": True,
+    }
+)
+
+print(uuid)  # e.g. "110e8400-e29b-41d4-a716-446655440000"
+```
+
+### Providing a custom UUID
+
+```python
+import uuid as uuid_lib
+
+my_uuid = str(uuid_lib.uuid5(uuid_lib.NAMESPACE_DNS, "unique-article-identifier"))
+
+articles.data.insert(
+    properties={"title": "Custom UUID example"},
+    uuid=my_uuid,
+)
+```
+
+### Inserting with a vector
+
+If your collection does not use a vectorizer module, you must supply the vector yourself.
+
+```python
+articles.data.insert(
+    properties={"title": "Manual vector example"},
+    vector=[0.12, -0.34, 0.56, ...],  # must match your embedding model's dimension
+)
+```
+
+## Create (batch import)
+
+Batch import is significantly faster than individual inserts because Weaviate processes objects in parallel and pipelines the write path. Use `data.insert_many()` for bulk data loading.
+
+<Steps>
+  <Step title="Prepare a list of objects">
+
+Build a list of `DataObject` instances. Each object maps directly to one row in the collection.
+
+```python
+from weaviate.classes.data import DataObject
+
+objects = [
+    DataObject(
+        properties={"title": f"Article {i}", "wordCount": i * 100},
+    )
+    for i in range(1, 1001)
+]
+```
+
+  </Step>
+  <Step title="Send the batch">
+
+Pass the full list to `insert_many()`. Weaviate returns a `BatchObjectReturn` with per-object results.
+
+```python
+result = articles.data.insert_many(objects)
+```
+
+  </Step>
+  <Step title="Check for errors">
+
+Always inspect `has_errors` and iterate over `errors` to handle any failed objects without losing the successful ones.
+
+```python
+if result.has_errors:
+    for idx, err in result.errors.items():
+        print(f"Object at index {idx} failed: {err.message}")
+```
+
+  </Step>
+</Steps>
+
+### Batch import with explicit UUIDs and vectors
+
+```python
+from weaviate.classes.data import DataObject
+
+objects = [
+    DataObject(
+        properties={"title": row["title"], "body": row["body"]},
+        uuid=row["id"],
+        vector=row["embedding"],
+    )
+    for row in source_data
+]
+
+result = articles.data.insert_many(objects)
+```
+
+## Read (get by ID)
+
+Retrieve a single object by its UUID. The response includes all stored properties plus any requested additional fields.
+
+```python
+obj = articles.query.fetch_object_by_id(
+    uuid="110e8400-e29b-41d4-a716-446655440000",
+    include_vector=True,
+)
+
+print(obj.properties)
+print(obj.vector)
+```
+
+**REST equivalent**
+
+```http
+GET /v1/objects/Article/110e8400-e29b-41d4-a716-446655440000
+```
+
+## Update (patch)
+
+Patch merges new property values into the existing object. Properties not listed in the call remain unchanged.
+
+```python
+articles.data.update(
+    uuid="110e8400-e29b-41d4-a716-446655440000",
+    properties={
+        "isPublished": True,
+        "wordCount": 920,
+    },
+)
+```
+
+**REST equivalent**
+
+```http
+PATCH /v1/objects/Article/110e8400-e29b-41d4-a716-446655440000
+Content-Type: application/json
+
+{
+  "properties": {
+    "isPublished": true,
+    "wordCount": 920
+  }
+}
+```
+
+## Update (replace)
+
+Replace overwrites the entire object, including all properties and the vector. Any property not in the new payload is removed.
+
+```python
+articles.data.replace(
+    uuid="110e8400-e29b-41d4-a716-446655440000",
+    properties={
+        "title": "Updated title",
+        "body": "Completely new content",
+        "wordCount": 600,
+        "isPublished": False,
+    },
+)
+```
+
+**REST equivalent**
+
+```http
+PUT /v1/objects/Article/110e8400-e29b-41d4-a716-446655440000
+```
+
+## Delete
+
+Delete a single object by UUID. The operation is idempotent — deleting a non-existent UUID returns success.
+
+```python
+articles.data.delete_by_id(
+    uuid="110e8400-e29b-41d4-a716-446655440000"
+)
+```
+
+**REST equivalent**
+
+```http
+DELETE /v1/objects/Article/110e8400-e29b-41d4-a716-446655440000
+```
+
+### Batch delete by filter
+
+Delete all objects matching a filter without fetching them first.
+
+```python
+from weaviate.classes.query import Filter
+
+articles.data.delete_many(
+    where=Filter.by_property("isPublished").equal(False)
+)
+```
+
+## Cross-references
+
+Cross-references link objects in one collection to objects in another (or the same) collection. They are stored as reference properties defined in the schema.
+
+### Define a reference property in the schema
+
+```python
+import weaviate.classes.config as wc
+
+# Collection Author already exists with its own properties
+client.collections.create(
+    name="Article",
+    properties=[
+        wc.Property(name="title", data_type=wc.DataType.TEXT),
+        # Reference to one or more Author objects
+        wc.ReferenceProperty(name="hasAuthor", target_collection="Author"),
+    ],
+)
+```
+
+### Add a cross-reference to an existing object
+
+```python
+articles.data.reference_add(
+    from_uuid="110e8400-e29b-41d4-a716-446655440000",  # Article UUID
+    from_property="hasAuthor",
+    to=weaviate.classes.data.DataReference(
+        to_uuid="220e8400-e29b-41d4-a716-446655440001"  # Author UUID
+    ),
+)
+```
+
+### Query with cross-references
+
+```python
+from weaviate.classes.query import QueryReference
+
+result = articles.query.fetch_objects(
+    return_references=QueryReference(
+        link_on="hasAuthor",
+        return_properties=["name", "bio"],
+    )
+)
+
+for obj in result.objects:
+    print(obj.properties["title"])
+    for ref in obj.references["hasAuthor"].objects:
+        print("  Author:", ref.properties["name"])
+```
+
+### Delete a cross-reference
+
+```python
+articles.data.reference_delete(
+    from_uuid="110e8400-e29b-41d4-a716-446655440000",
+    from_property="hasAuthor",
+    to=weaviate.classes.data.DataReference(
+        to_uuid="220e8400-e29b-41d4-a716-446655440001"
+    ),
+)
+```
+
+## Object TTL (time-to-live)
+
+Weaviate can automatically delete objects after they expire. TTL is configured at the collection level, not per-object.
+
+```python
+import weaviate.classes.config as wc
+
+client.collections.create(
+    name="CacheEntry",
+    object_ttl_config=wc.Configure.object_ttl(
+        enabled=True,
+        # Base timestamp for expiry calculation.
+        # Options: "_creationTimeUnix", "_lastUpdateTimeUnix", or a date property name.
+        delete_on="_creationTimeUnix",
+        # Seconds to add to the base timestamp before expiring the object.
+        default_ttl=86400,  # 24 hours
+        # Hide expired objects from results before background cleanup runs.
+        filter_expired_objects=True,
+    ),
+)
+```
+
+A background process checks for expired objects and deletes them. `filterExpiredObjects=true` excludes them from query results immediately upon expiry, even before deletion.
+
+## REST API reference
+
+| Operation | Method | Endpoint |
+|-----------|--------|----------|
+| Create object | `POST` | `/v1/objects` |
+| Get object | `GET` | `/v1/objects/{className}/{id}` |
+| Update (patch) | `PATCH` | `/v1/objects/{className}/{id}` |
+| Replace (full) | `PUT` | `/v1/objects/{className}/{id}` |
+| Delete object | `DELETE` | `/v1/objects/{className}/{id}` |
+| Batch create | `POST` | `/v1/batch/objects` |
+| Batch delete | `DELETE` | `/v1/batch/objects` |
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Collections & schema" href="/data/schema" icon="table">
+    Define collection structure, data types, and index settings.
+  </Card>
+  <Card title="Multi-tenancy" href="/data/multi-tenancy" icon="users">
+    Scope object operations to a specific tenant.
+  </Card>
+  <Card title="Vector search" href="/search/vector-search" icon="magnifying-glass">
+    Search objects by semantic similarity.
+  </Card>
+  <Card title="REST API: objects" href="/api/rest-objects" icon="code">
+    Full REST reference for object CRUD operations.
+  </Card>
+</CardGroup>

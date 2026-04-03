@@ -1,0 +1,128 @@
+---
+title: "gRPC API overview"
+description: "Overview of the Weaviate gRPC API: why to use it, available RPCs, authentication, and proto definitions."
+keywords: ["gRPC", "protocol buffers", "binary protocol", "streaming", "high throughput"]
+---
+
+The Weaviate gRPC API provides a high-performance, binary alternative to the REST and GraphQL APIs. It is the recommended interface for latency-sensitive or high-throughput workloads in production.
+
+## Why use gRPC
+
+- **Lower latency** — binary Protocol Buffers encoding is faster to serialize and deserialize than JSON.
+- **Smaller payloads** — binary wire format produces significantly smaller messages than equivalent JSON.
+- **Streaming support** — the `BatchStream` RPC allows bidirectional streaming for continuous high-volume ingestion.
+- **Strong typing** — the proto schema is the contract; clients benefit from generated, type-safe stubs.
+- **HTTP/2 multiplexing** — multiple in-flight requests share a single connection without head-of-line blocking.
+
+<Note>
+  The official Python client uses gRPC transparently for all search operations by default. You do not need to write gRPC code directly when using a supported client library.
+</Note>
+
+## Port
+
+The gRPC server listens on port **50051** by default. The REST server listens on port **8080**. Both can be changed in the [server configuration](/deployment/configuration).
+
+```
+host:50051   # gRPC
+host:8080    # REST / GraphQL
+```
+
+## Service definition
+
+The full service is defined in `grpc/proto/v1/weaviate.proto`:
+
+```protobuf weaviate.proto
+service Weaviate {
+  rpc Search(SearchRequest) returns (SearchReply) {};
+  rpc BatchObjects(BatchObjectsRequest) returns (BatchObjectsReply) {};
+  rpc BatchReferences(BatchReferencesRequest) returns (BatchReferencesReply) {};
+  rpc BatchDelete(BatchDeleteRequest) returns (BatchDeleteReply) {};
+  rpc TenantsGet(TenantsGetRequest) returns (TenantsGetReply) {};
+  rpc Aggregate(AggregateRequest) returns (AggregateReply) {};
+  rpc BatchStream(stream BatchStreamRequest) returns (stream BatchStreamReply) {};
+}
+```
+
+### RPC summary
+
+| RPC | Request | Reply | Description |
+|-----|---------|-------|-------------|
+| `Search` | `SearchRequest` | `SearchReply` | Vector, keyword, hybrid, and generative search |
+| `BatchObjects` | `BatchObjectsRequest` | `BatchObjectsReply` | Bulk-insert objects |
+| `BatchReferences` | `BatchReferencesRequest` | `BatchReferencesReply` | Bulk-insert cross-references |
+| `BatchDelete` | `BatchDeleteRequest` | `BatchDeleteReply` | Delete objects matching a filter |
+| `TenantsGet` | `TenantsGetRequest` | `TenantsGetReply` | List tenants for a multi-tenant collection |
+| `Aggregate` | `AggregateRequest` | `AggregateReply` | Statistical aggregations over a collection |
+| `BatchStream` | `stream BatchStreamRequest` | `stream BatchStreamReply` | Bidirectional streaming batch ingestion |
+
+## Authentication
+
+Pass your API key as a Bearer token in the gRPC metadata header. This mirrors how authentication works over REST.
+
+```
+authorization: Bearer <your-api-key>
+```
+
+In Python with the official client, pass the API key during client construction — the client sets this header automatically on every gRPC call.
+
+```python python
+import weaviate
+
+client = weaviate.connect_to_weaviate_cloud(
+    cluster_url="https://your-cluster.weaviate.network",
+    auth_credentials=weaviate.auth.AuthApiKey("your-api-key"),
+)
+```
+
+For local instances with authentication disabled, no header is required.
+
+## Proto definitions
+
+All `.proto` files are located in `grpc/proto/v1/` in the Weaviate repository:
+
+| File | Contents |
+|------|----------|
+| `weaviate.proto` | Service definition |
+| `search_get.proto` | `SearchRequest`, `SearchReply`, metadata and property messages |
+| `base_search.proto` | Shared search messages: `NearVector`, `NearObject`, `NearTextSearch`, `Hybrid`, `BM25` |
+| `batch.proto` | `BatchObjectsRequest`, `BatchStreamRequest`, `BatchObject` |
+| `batch_delete.proto` | `BatchDeleteRequest`, `BatchDeleteReply` |
+| `aggregate.proto` | `AggregateRequest`, `AggregateReply` |
+| `generative.proto` | `GenerativeSearch`, all `GenerativeProvider` messages |
+| `tenants.proto` | `TenantsGetRequest`, `Tenant`, `TenantActivityStatus` |
+
+## Client libraries
+
+Weaviate's official client libraries handle connection management, authentication, and proto encoding for you. You do not need to interact with the gRPC layer directly.
+
+- **Python** — uses gRPC for all search queries by default. Batch ingestion can use either gRPC or REST.
+- **TypeScript / JavaScript** — uses gRPC for search and batch operations.
+- **Go** — generated gRPC stubs are available directly from the `grpc/generated` package.
+- **Java** — generated stubs in the `io.weaviate.client.grpc.protocol.v1` package.
+
+## When to use gRPC vs REST
+
+| Use case | Recommended interface |
+|----------|-----------------------|
+| Search (production) | gRPC |
+| High-throughput batch ingestion | gRPC (`BatchStream`) |
+| Schema management | REST |
+| Object CRUD | REST |
+| Ad-hoc exploration | GraphQL |
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="gRPC search" icon="magnifying-glass" href="/api/grpc-search">
+    Full reference for the Search RPC: all search types, filters, generative, and reranking.
+  </Card>
+  <Card title="gRPC batch operations" icon="layer-group" href="/api/grpc-batch">
+    Bulk insert, streaming ingestion, and batch delete via gRPC.
+  </Card>
+  <Card title="GraphQL overview" icon="brackets-curly" href="/api/graphql-overview">
+    The GraphQL API for Get, Aggregate, and Explore queries.
+  </Card>
+  <Card title="REST API overview" icon="plug" href="/api/rest-overview">
+    The REST API for schema, object management, and backups.
+  </Card>
+</CardGroup>

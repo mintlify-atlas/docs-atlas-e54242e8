@@ -1,0 +1,456 @@
+---
+title: "GraphQL Aggregate queries"
+description: "Reference for Weaviate GraphQL Aggregate queries: numeric, text, boolean, date, and reference aggregations with filters, groupBy, and vector search."
+keywords: ["GraphQL", "Aggregate", "count", "mean", "sum", "topOccurrences", "groupBy", "statistics"]
+---
+
+The `Aggregate` query computes statistical summaries over a collection or a filtered subset of it. Unlike `Get`, it returns aggregated values rather than individual objects.
+
+## Query structure
+
+```graphql basic structure
+{
+  Aggregate {
+    <ClassName> {
+      meta {
+        count
+      }
+      <propertyName> {
+        <aggregationField>
+      }
+    }
+  }
+}
+```
+
+The `meta` field returns the total object count. Each property field returns type-specific aggregation statistics.
+
+## Aggregation fields by data type
+
+<AccordionGroup>
+  <Accordion title="Numeric — int and number">
+    Applies to properties of type `int`, `number`, `int[]`, and `number[]`.
+
+    | Field | Description |
+    |-------|-------------|
+    | `count` | Number of non-null values |
+    | `mean` | Arithmetic mean |
+    | `median` | Middle value |
+    | `mode` | Most frequent value |
+    | `maximum` | Largest value |
+    | `minimum` | Smallest value |
+    | `sum` | Sum of all values |
+    | `type` | Property schema type as a string |
+
+    ```graphql numeric aggregation
+    {
+      Aggregate {
+        Article {
+          meta { count }
+          year {
+            count
+            mean
+            median
+            mode
+            maximum
+            minimum
+            sum
+          }
+          wordCount {
+            mean
+            sum
+            maximum
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Text — text and text[]">
+    Applies to properties of type `text` and `text[]`.
+
+    | Field | Description |
+    |-------|-------------|
+    | `count` | Number of non-null values |
+    | `topOccurrences` | Most frequent values (list of `value` + `occurs`) |
+    | `type` | Property schema type as a string |
+
+    `topOccurrences` accepts an optional `limit` argument to control how many top values to return.
+
+    ```graphql text aggregation
+    {
+      Aggregate {
+        Article {
+          category {
+            count
+            topOccurrences(limit: 5) {
+              value
+              occurs
+            }
+          }
+          author {
+            topOccurrences(limit: 3) {
+              value
+              occurs
+            }
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Boolean — boolean and boolean[]">
+    Applies to properties of type `boolean` and `boolean[]`.
+
+    | Field | Description |
+    |-------|-------------|
+    | `count` | Number of non-null values |
+    | `totalTrue` | Count of `true` values |
+    | `totalFalse` | Count of `false` values |
+    | `percentageTrue` | Fraction of `true` values (0.0–1.0) |
+    | `percentageFalse` | Fraction of `false` values (0.0–1.0) |
+    | `type` | Property schema type as a string |
+
+    ```graphql boolean aggregation
+    {
+      Aggregate {
+        Article {
+          isPublished {
+            count
+            totalTrue
+            totalFalse
+            percentageTrue
+            percentageFalse
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Date — date and date[]">
+    Applies to properties of type `date` and `date[]`. Values are returned as RFC3339 strings.
+
+    | Field | Description |
+    |-------|-------------|
+    | `count` | Number of non-null values |
+    | `median` | Median date |
+    | `mode` | Most frequent date |
+    | `maximum` | Latest date |
+    | `minimum` | Earliest date |
+
+    ```graphql date aggregation
+    {
+      Aggregate {
+        Article {
+          publishedAt {
+            count
+            minimum
+            maximum
+            median
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Reference — cross-references">
+    Applies to cross-reference properties.
+
+    | Field | Description |
+    |-------|-------------|
+    | `type` | Property schema type as a string |
+    | `pointingTo` | List of collection names this property points to |
+
+    ```graphql reference aggregation
+    {
+      Aggregate {
+        Article {
+          author {
+            type
+            pointingTo
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Filtering aggregations
+
+Use the `where` argument to compute statistics over a subset of objects.
+
+```graphql filtered aggregation
+{
+  Aggregate {
+    Article(
+      where: {
+        path: ["year"]
+        operator: GreaterThanEqual
+        valueInt: 2020
+      }
+    ) {
+      meta { count }
+      year {
+        mean
+        minimum
+        maximum
+      }
+    }
+  }
+}
+```
+
+Compound filters use `And`, `Or`, and `Not` operators:
+
+```graphql compound filter
+{
+  Aggregate {
+    Article(
+      where: {
+        operator: And
+        operands: [
+          { path: ["category"], operator: Equal, valueText: "Science" }
+          { path: ["year"], operator: GreaterThan, valueInt: 2018 }
+        ]
+      }
+    ) {
+      meta { count }
+      wordCount { mean }
+    }
+  }
+}
+```
+
+## Vector search with objectLimit
+
+Use `nearText` or `nearVector` to aggregate over a semantically similar subset. The `objectLimit` argument caps the number of candidates considered before aggregation.
+
+```graphql nearText aggregate
+{
+  Aggregate {
+    Article(
+      nearText: {
+        concepts: ["climate change"]
+        certainty: 0.7
+      }
+      objectLimit: 100
+    ) {
+      meta { count }
+      year {
+        mean
+        minimum
+        maximum
+      }
+      category {
+        topOccurrences(limit: 5) {
+          value
+          occurs
+        }
+      }
+    }
+  }
+}
+```
+
+```graphql nearVector aggregate
+{
+  Aggregate {
+    Article(
+      nearVector: {
+        vector: [0.1, 0.2, 0.3]
+        distance: 0.4
+      }
+      objectLimit: 50
+    ) {
+      meta { count }
+      wordCount { mean sum }
+    }
+  }
+}
+```
+
+<Note>
+  `objectLimit` is required when using `nearText` or `nearVector` with `Aggregate`. It prevents the aggregation from scanning the entire collection when a similarity threshold is not specified.
+</Note>
+
+## Hybrid search in Aggregate
+
+Aggregate over the results of a hybrid search:
+
+```graphql hybrid aggregate
+{
+  Aggregate {
+    Article(
+      hybrid: {
+        query: "energy policy"
+        alpha: 0.5
+      }
+      objectLimit: 200
+    ) {
+      meta { count }
+      category {
+        topOccurrences(limit: 3) {
+          value
+          occurs
+        }
+      }
+    }
+  }
+}
+```
+
+## groupBy aggregation
+
+Group results by a property and compute per-group statistics. The response includes a `groupedBy` field with the group key.
+
+```graphql groupBy
+{
+  Aggregate {
+    Article(
+      groupBy: ["category"]
+    ) {
+      meta { count }
+      year {
+        mean
+        minimum
+        maximum
+      }
+      groupedBy {
+        value
+        path
+      }
+    }
+  }
+}
+```
+
+The `groupedBy` field returns:
+- `value` — the group key as a string
+- `path` — the property path as a list of strings
+
+Combine `groupBy` with `where` to aggregate a filtered subset grouped by a dimension:
+
+```graphql groupBy with filter
+{
+  Aggregate {
+    Article(
+      where: {
+        path: ["isPublished"]
+        operator: Equal
+        valueBoolean: true
+      }
+      groupBy: ["category"]
+    ) {
+      meta { count }
+      wordCount { mean }
+      groupedBy {
+        value
+        path
+      }
+    }
+  }
+}
+```
+
+## limit
+
+The `limit` argument caps the number of groups returned when used with `groupBy`:
+
+```graphql limit with groupBy
+{
+  Aggregate {
+    Article(
+      groupBy: ["category"]
+      limit: 5
+    ) {
+      meta { count }
+      groupedBy { value }
+    }
+  }
+}
+```
+
+## Multi-tenant collections
+
+Specify the tenant name with the `tenant` argument:
+
+```graphql multi-tenant aggregate
+{
+  Aggregate {
+    Article(
+      tenant: "tenant-a"
+    ) {
+      meta { count }
+    }
+  }
+}
+```
+
+## Full example
+
+A complete aggregate query combining filters, groupBy, and multiple property types:
+
+```graphql full example
+{
+  Aggregate {
+    Article(
+      where: {
+        path: ["year"]
+        operator: GreaterThan
+        valueInt: 2015
+      }
+      groupBy: ["category"]
+      limit: 10
+    ) {
+      meta {
+        count
+      }
+      year {
+        mean
+        minimum
+        maximum
+      }
+      wordCount {
+        mean
+        sum
+      }
+      isPublished {
+        totalTrue
+        percentageTrue
+      }
+      author {
+        topOccurrences(limit: 3) {
+          value
+          occurs
+        }
+      }
+      groupedBy {
+        value
+        path
+      }
+    }
+  }
+}
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="GraphQL overview" icon="brackets-curly" href="/api/graphql-overview">
+    Endpoint, request format, and authentication.
+  </Card>
+  <Card title="GraphQL Get" icon="magnifying-glass" href="/api/graphql-get">
+    Retrieve individual objects with search and filters.
+  </Card>
+  <Card title="Filters" icon="filter" href="/search/filters">
+    Full filter operator and value type reference.
+  </Card>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Conceptual guide to hybrid BM25 + vector search.
+  </Card>
+</CardGroup>

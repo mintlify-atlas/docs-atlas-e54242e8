@@ -1,0 +1,280 @@
+---
+title: 'Collections & schema'
+description: 'Define collections (formerly classes), data types, properties, and vector index configuration in Weaviate.'
+keywords: ['schema', 'collection', 'class', 'data types', 'hnsw', 'flat index', 'dynamic index', 'vector index']
+---
+
+A **collection** is the top-level organizational unit in Weaviate, equivalent to a table in a relational database. Each collection has a name, a set of typed properties, and configuration for its vector index and inverted index.
+
+<Note>
+Collections were called "classes" in older versions of Weaviate and the REST API. The terms are interchangeable in the API, but this documentation uses "collection" throughout.
+</Note>
+
+## Creating a collection
+
+At minimum a collection requires a name. Names must start with an uppercase letter and use CamelCase for multiple words (e.g., `Article`, `ArticleAuthor`).
+
+```python
+import weaviate
+import weaviate.classes.config as wc
+
+client = weaviate.connect_to_local()
+
+client.collections.create(
+    name="Article",
+    description="A news article with title and body text",
+)
+```
+
+### With properties
+
+Properties define the fields stored on every object in the collection.
+
+```python
+client.collections.create(
+    name="Article",
+    properties=[
+        wc.Property(name="title", data_type=wc.DataType.TEXT),
+        wc.Property(name="body", data_type=wc.DataType.TEXT),
+        wc.Property(name="wordCount", data_type=wc.DataType.INT),
+        wc.Property(name="publishedAt", data_type=wc.DataType.DATE),
+        wc.Property(name="isPublished", data_type=wc.DataType.BOOL),
+        wc.Property(name="score", data_type=wc.DataType.NUMBER),
+        wc.Property(name="tags", data_type=wc.DataType.TEXT_ARRAY),
+        wc.Property(name="externalId", data_type=wc.DataType.UUID),
+    ],
+)
+```
+
+### With a vectorizer
+
+To automatically generate vectors from your data, specify a vectorizer module.
+
+```python
+client.collections.create(
+    name="Article",
+    vectorizer_config=wc.Configure.Vectorizer.text2vec_weaviate(),
+    properties=[
+        wc.Property(name="title", data_type=wc.DataType.TEXT),
+        wc.Property(name="body", data_type=wc.DataType.TEXT),
+    ],
+)
+```
+
+## Data types
+
+Every property requires a `data_type`. Weaviate supports the following primitive types.
+
+<AccordionGroup>
+  <Accordion title="Scalar types">
+
+| Type | Description | Example value |
+|------|-------------|---------------|
+| `text` | UTF-8 string. Tokenized for full-text search. | `"Hello, world"` |
+| `int` | 64-bit signed integer | `42` |
+| `number` | 64-bit floating point | `3.14` |
+| `boolean` | Boolean flag | `true` |
+| `date` | RFC 3339 timestamp | `"2024-01-15T09:00:00Z"` |
+| `uuid` | UUID stored as raw bytes — more efficient than storing as text | `"110e8400-e29b-41d4-a716-446655440000"` |
+| `blob` | Base64-encoded binary data | `"aGVsbG8="` |
+| `geoCoordinates` | Latitude/longitude pair | `{"latitude": 51.5, "longitude": -0.1}` |
+| `phoneNumber` | Parsed phone number with country code | `{"input": "+44 7911 123456"}` |
+| `object` | Nested JSON object with typed sub-properties | `{"street": "Baker St", "number": 221}` |
+
+  </Accordion>
+  <Accordion title="Array types">
+
+Append `[]` to any scalar type name to make it an array.
+
+| Type | Description |
+|------|-------------|
+| `text[]` | Array of strings |
+| `int[]` | Array of integers |
+| `number[]` | Array of floats |
+| `boolean[]` | Array of booleans |
+| `date[]` | Array of RFC 3339 timestamps |
+| `uuid[]` | Array of UUIDs |
+| `object[]` | Array of nested objects |
+
+  </Accordion>
+  <Accordion title="Cross-references">
+
+A property whose `data_type` starts with an uppercase letter is a cross-reference to another collection. Cross-references link objects together without embedding one inside the other.
+
+```python
+wc.Property(
+    name="author",
+    data_type=wc.DataType.REFERENCE,
+    # or pass the collection name string directly
+)
+```
+
+See [Managing objects](/data/manage-objects) for how to create and query cross-references.
+
+  </Accordion>
+</AccordionGroup>
+
+## Property settings
+
+Each property accepts additional configuration beyond its data type.
+
+```python
+wc.Property(
+    name="title",
+    data_type=wc.DataType.TEXT,
+    # Tokenization strategy for full-text search (text and text[] only)
+    tokenization=wc.Tokenization.WORD,       # default
+    # Inverted index settings
+    index_filterable=True,   # enable equality/range filters (default: True)
+    index_searchable=True,   # enable BM25/hybrid search (default: True)
+    index_range_filters=False,  # enable range filters optimized for numeric data (default: False)
+)
+```
+
+### Tokenization options
+
+Tokenization controls how `text` and `text[]` values are split and lowercased before indexing.
+
+| Value | Behavior |
+|-------|----------|
+| `word` | Split on any non-alphanumeric character, lowercase. Default. |
+| `lowercase` | Split on whitespace, lowercase. |
+| `whitespace` | Split on whitespace, preserve case. |
+| `field` | Trim whitespace only, no splitting. Useful for exact-match on full values. |
+
+### Inverted index settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `indexFilterable` | `true` | Creates a roaring bitmap index for equality and range filters. |
+| `indexSearchable` | `true` | Creates a BM25 index for keyword and hybrid search. Applies to `text` and `text[]` only. |
+| `indexRangeFilters` | `false` | Creates a range-optimized index for `int`, `number`, and `date` properties. Recommended for large datasets with frequent range queries. |
+
+## Vector index configuration
+
+Weaviate supports three vector index types. Select based on your data volume and latency requirements.
+
+<Tabs>
+  <Tab title="HNSW (default)">
+
+HNSW (Hierarchical Navigable Small World) is the default index. It provides fast approximate nearest-neighbor search with configurable accuracy/speed trade-offs.
+
+```python
+client.collections.create(
+    name="Article",
+    vector_index_config=wc.Configure.VectorIndex.hnsw(
+        distance_metric=wc.VectorDistances.COSINE,
+        max_connections=32,          # M: edges per node. Higher = better recall, more memory.
+        ef_construction=128,         # Build-time search depth. Higher = better recall, slower build.
+        ef=-1,                       # Query-time search depth. -1 = auto-selected by Weaviate.
+        dynamic_ef_min=100,          # Lower bound for dynamic ef selection.
+        dynamic_ef_max=500,          # Upper bound for dynamic ef selection.
+        dynamic_ef_factor=8,         # Multiplier applied to the query limit to pick ef.
+        cleanup_interval_seconds=300,
+        flat_search_cutoff=40000,    # Fall back to flat search below this object count.
+    ),
+)
+```
+
+**Distance metrics**
+
+| Metric | Key | Use when |
+|--------|-----|----------|
+| Cosine | `cosine` | Normalized embeddings, direction matters. Default. |
+| Dot product | `dot` | Raw embeddings from models trained with dot similarity. |
+| L2 squared | `l2-squared` | Euclidean distance in embedding space. |
+| Manhattan | `manhattan` | L1 distance, robust to outliers. |
+| Hamming | `hamming` | Binary or integer vectors, edit-distance style. |
+
+**Key parameters**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `maxConnections` | `32` | Number of edges per node (HNSW parameter M). Range: 4–2047. |
+| `efConstruction` | `128` | Graph construction search breadth. Minimum: 4. |
+| `ef` | `-1` | Query search breadth. `-1` lets Weaviate tune dynamically. |
+| `flatSearchCutoff` | `40000` | Object count below which HNSW falls back to flat brute-force. |
+
+  </Tab>
+  <Tab title="Flat">
+
+The Flat index performs an exact brute-force search over all vectors. It has no build-time cost and uses less memory than HNSW but query time scales linearly with object count. Recommended for collections with fewer than ~10,000 objects or when perfect recall is required.
+
+```python
+client.collections.create(
+    name="Article",
+    vector_index_config=wc.Configure.VectorIndex.flat(
+        distance_metric=wc.VectorDistances.COSINE,
+    ),
+)
+```
+
+  </Tab>
+  <Tab title="Dynamic">
+
+The Dynamic index starts as a Flat index for small collections and automatically switches to HNSW once the object count crosses a configurable threshold. This avoids HNSW overhead on small datasets while maintaining scalability.
+
+```python
+client.collections.create(
+    name="Article",
+    vector_index_config=wc.Configure.VectorIndex.dynamic(
+        distance_metric=wc.VectorDistances.COSINE,
+        threshold=10_000,   # switch from flat to HNSW above this count (default: 10,000)
+        hnsw=wc.Configure.VectorIndex.hnsw(
+            max_connections=32,
+            ef_construction=128,
+        ),
+        flat=wc.Configure.VectorIndex.flat(),
+    ),
+)
+```
+
+  </Tab>
+</Tabs>
+
+## Updating a collection
+
+You can update a collection's configuration after creation. Adding new properties and changing inverted index settings are supported. Vector index type cannot be changed after creation.
+
+```python
+collection = client.collections.get("Article")
+
+# Add a new property
+collection.config.add_property(
+    wc.Property(name="summary", data_type=wc.DataType.TEXT)
+)
+
+# Update vector index parameters (e.g., ef for query-time tuning)
+collection.config.update(
+    vector_index_config=wc.Reconfigure.VectorIndex.hnsw(ef=256)
+)
+```
+
+## Deleting a collection
+
+Deleting a collection permanently removes all objects and schema definitions associated with it.
+
+```python
+client.collections.delete("Article")
+```
+
+<Info>
+Weaviate does not support renaming collections. Create a new collection and migrate data if you need to rename.
+</Info>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Managing objects" href="/data/manage-objects" icon="database">
+    Create, read, update, and delete objects within a collection.
+  </Card>
+  <Card title="Multi-tenancy" href="/data/multi-tenancy" icon="users">
+    Isolate data per tenant within a single collection.
+  </Card>
+  <Card title="Vector compression" href="/data/compression" icon="compress">
+    Reduce memory usage with PQ, BQ, or SQ compression.
+  </Card>
+  <Card title="REST API: schema" href="/api/rest-schema" icon="code">
+    Full REST API reference for schema management.
+  </Card>
+</CardGroup>

@@ -1,0 +1,345 @@
+---
+title: "gRPC search"
+description: "Full reference for the Weaviate gRPC Search RPC: request fields, search types, metadata, filters, generative, and reranking."
+keywords: ["gRPC", "search", "nearText", "nearVector", "hybrid", "BM25", "generative", "rerank"]
+---
+
+The `Search` RPC is the primary interface for querying objects from a Weaviate collection. It supports vector, keyword, hybrid, and generative search in a single message.
+
+```protobuf search_get.proto
+rpc Search(SearchRequest) returns (SearchReply) {};
+```
+
+## SearchRequest fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `collection` | `string` | Yes | Name of the collection to search |
+| `tenant` | `string` | No | Tenant name for multi-tenant collections |
+| `consistency_level` | `ConsistencyLevel` | No | Read consistency level: `ONE`, `QUORUM`, or `ALL` |
+| `properties` | `PropertiesRequest` | No | Which object properties to return |
+| `metadata` | `MetadataRequest` | No | Which metadata fields to return (id, vector, score, etc.) |
+| `group_by` | `GroupBy` | No | Group results by a property |
+| `limit` | `uint32` | No | Maximum number of results (0 = use server default) |
+| `offset` | `uint32` | No | Skip the first N results |
+| `autocut` | `uint32` | No | Automatically cut results after the Nth score gap |
+| `after` | `string` | No | Cursor UUID for keyset pagination |
+| `sort_by` | `repeated SortBy` | No | Sort results by one or more properties |
+| `filters` | `Filters` | No | Structured filter to restrict the result set |
+| `hybrid_search` | `Hybrid` | No | Hybrid BM25 + vector search |
+| `bm25_search` | `BM25` | No | Keyword-only BM25 search |
+| `near_vector` | `NearVector` | No | Search by a raw vector |
+| `near_object` | `NearObject` | No | Search for objects similar to a given UUID |
+| `near_text` | `NearTextSearch` | No | Vectorize a text query then search (requires a vectorizer module) |
+| `near_image` | `NearImageSearch` | No | Search by image (requires an image vectorizer module) |
+| `near_audio` | `NearAudioSearch` | No | Search by audio |
+| `near_video` | `NearVideoSearch` | No | Search by video |
+| `near_depth` | `NearDepthSearch` | No | Search by depth image |
+| `near_thermal` | `NearThermalSearch` | No | Search by thermal image |
+| `near_imu` | `NearIMUSearch` | No | Search by IMU data |
+| `generative` | `GenerativeSearch` | No | Generate text from retrieved results |
+| `rerank` | `Rerank` | No | Re-rank results by a property |
+
+At most one search operator (`hybrid_search`, `bm25_search`, `near_*`) can be set per request.
+
+## MetadataRequest fields
+
+Control which metadata fields are included in each result:
+
+```protobuf search_get.proto
+message MetadataRequest {
+  bool uuid = 1;
+  bool vector = 2;
+  bool creation_time_unix = 3;
+  bool last_update_time_unix = 4;
+  bool distance = 5;
+  bool certainty = 6;
+  bool score = 7;
+  bool explain_score = 8;
+  bool is_consistent = 9;
+  repeated string vectors = 10;
+  bool query_profile = 11;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `uuid` | Object UUID |
+| `vector` | Default vector for the object |
+| `creation_time_unix` | Unix timestamp of creation |
+| `last_update_time_unix` | Unix timestamp of last update |
+| `distance` | Vector distance from the query |
+| `certainty` | Certainty score (1 − distance / 2) |
+| `score` | Ranking score (BM25 or hybrid) |
+| `explain_score` | Human-readable score explanation |
+| `is_consistent` | Whether the object read was consistent across replicas |
+| `vectors` | Named vectors for multi-vector collections |
+| `query_profile` | Per-shard profiling breakdown |
+
+## Search types
+
+<AccordionGroup>
+  <Accordion title="nearVector — search by vector">
+    Search for objects whose vector is closest to the provided query vector.
+
+    ```protobuf base_search.proto
+    message NearVector {
+      optional double certainty = 2;
+      optional double distance = 3;
+      Targets targets = 6;
+      repeated VectorForTarget vector_for_targets = 8;
+      repeated Vectors vectors = 9;
+    }
+    ```
+
+    Use `certainty` (0–1) or `distance` as a threshold. Use `targets` and `vector_for_targets` for multi-vector collections.
+
+    ```python python
+    import weaviate.classes as wvc
+
+    results = collection.query.near_vector(
+        near_vector=[0.1, 0.2, 0.3, ...],
+        limit=10,
+        return_metadata=wvc.query.MetadataQuery(distance=True),
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="nearObject — search by object UUID">
+    Search for objects similar to an existing object, identified by its UUID.
+
+    ```protobuf base_search.proto
+    message NearObject {
+      string id = 1;
+      optional double certainty = 2;
+      optional double distance = 3;
+      Targets targets = 5;
+    }
+    ```
+
+    ```python python
+    results = collection.query.near_object(
+        near_object="00000000-0000-0000-0000-000000000001",
+        limit=5,
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="nearText — search by text query">
+    Vectorize a text query using the collection's vectorizer module, then search by the resulting vector. Requires a vectorizer module (e.g., `text2vec-openai`).
+
+    ```protobuf base_search.proto
+    message NearTextSearch {
+      message Move {
+        float force = 1;
+        repeated string concepts = 2;
+        repeated string uuids = 3;
+      }
+      repeated string query = 1;
+      optional double certainty = 2;
+      optional double distance = 3;
+      optional Move move_to = 4;
+      optional Move move_away = 5;
+      Targets targets = 7;
+    }
+    ```
+
+    `move_to` and `move_away` shift the query vector toward or away from additional concepts.
+
+    ```python python
+    results = collection.query.near_text(
+        query="climate change effects",
+        limit=10,
+        return_metadata=wvc.query.MetadataQuery(score=True),
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="nearImage / nearAudio / nearVideo — multimodal search">
+    Search using a base64-encoded media file. Requires the corresponding multimodal vectorizer module.
+
+    ```protobuf base_search.proto
+    message NearImageSearch {
+      string image = 1;   // base64-encoded image
+      optional double certainty = 2;
+      optional double distance = 3;
+      Targets targets = 5;
+    }
+    ```
+
+    The same pattern applies to `NearAudioSearch` (`audio`) and `NearVideoSearch` (`video`).
+  </Accordion>
+
+  <Accordion title="bm25_search — keyword search">
+    Rank objects by BM25f (Best Match 25 with field weights) against a text query.
+
+    ```protobuf base_search.proto
+    message BM25 {
+      string query = 1;
+      repeated string properties = 2;
+      optional SearchOperatorOptions search_operator = 3;
+    }
+    ```
+
+    `properties` limits which text properties are searched. `search_operator` controls whether all tokens must match (`AND`) or any token suffices (`OR`).
+
+    ```python python
+    results = collection.query.bm25(
+        query="machine learning",
+        query_properties=["title", "summary"],
+        limit=10,
+        return_metadata=wvc.query.MetadataQuery(score=True),
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="hybrid_search — BM25 + vector fusion">
+    Combine BM25 keyword ranking with vector similarity using a weighted fusion algorithm.
+
+    ```protobuf base_search.proto
+    message Hybrid {
+      string query = 1;
+      repeated string properties = 2;
+      optional float alpha_param = 12;
+      FusionType fusion_type = 5;
+      NearTextSearch near_text = 8;
+      NearVector near_vector = 9;
+      Targets targets = 10;
+      optional SearchOperatorOptions bm25_search_operator = 11;
+    }
+
+    enum FusionType {
+      FUSION_TYPE_RANKED = 1;          // Reciprocal Rank Fusion
+      FUSION_TYPE_RELATIVE_SCORE = 2;  // Relative Score Fusion
+    }
+    ```
+
+    `alpha_param` controls the blend: `0.0` = pure BM25, `1.0` = pure vector, `0.5` = equal weight.
+
+    ```python python
+    results = collection.query.hybrid(
+        query="neural networks",
+        alpha=0.5,
+        limit=10,
+        return_metadata=wvc.query.MetadataQuery(score=True, explain_score=True),
+    )
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Filters
+
+Filters restrict the candidate set before ranking. Pass a `Filters` message in the `filters` field.
+
+```python python
+import weaviate.classes as wvc
+
+results = collection.query.near_text(
+    query="renewable energy",
+    filters=wvc.query.Filter.by_property("year").greater_than(2020),
+    limit=10,
+)
+```
+
+Filters compose with `And` / `Or` operators and support all property data types. See the [filter reference](/search/filters) for the full operator list.
+
+## Generative search
+
+The `generative` field passes retrieved objects to a language model to generate a response. It maps to the `GenerativeSearch` message.
+
+```protobuf generative.proto
+message GenerativeSearch {
+  message Single {
+    string prompt = 1;         // Prompt per individual result
+    repeated GenerativeProvider queries = 3;
+  }
+  message Grouped {
+    string task = 1;           // Single prompt for all results together
+    optional TextArray properties = 2;
+    repeated GenerativeProvider queries = 3;
+  }
+  Single single = 4;
+  Grouped grouped = 5;
+}
+```
+
+```python python
+results = collection.generate.near_text(
+    query="solar energy",
+    limit=3,
+    single_prompt="Summarize this article in one sentence: {title} {content}",
+    grouped_task="What are the key themes across these articles?",
+)
+```
+
+Supported providers include: `anthropic`, `openai`, `cohere`, `google`, `mistral`, `ollama`, `aws`, `databricks`, `friendliai`, `nvidia`, `xai`, `contextualai`.
+
+## Reranking
+
+The `rerank` field re-scores results using a cross-encoder reranker module after the initial retrieval.
+
+```protobuf search_get.proto
+message Rerank {
+  string property = 1;      // Property to use as reranker input
+  optional string query = 2; // Query for the reranker (defaults to search query)
+}
+```
+
+```python python
+results = collection.query.near_text(
+    query="climate policy",
+    limit=20,
+    rerank=wvc.query.Rerank(prop="summary", query="climate policy"),
+    return_metadata=wvc.query.MetadataQuery(score=True),
+)
+```
+
+## GroupBy
+
+Group results into buckets by a property value. Each bucket contains up to `objects_per_group` objects.
+
+```protobuf search_get.proto
+message GroupBy {
+  repeated string path = 1;
+  int32 number_of_groups = 2;
+  int32 objects_per_group = 3;
+}
+```
+
+## Pagination
+
+| Parameter | Description |
+|-----------|-------------|
+| `limit` | Maximum results per page |
+| `offset` | Skip the first N results (avoid for large offsets) |
+| `after` | UUID cursor for efficient keyset pagination |
+| `autocut` | Stop after the Nth significant score drop |
+
+## SearchReply
+
+The `SearchReply` contains:
+
+| Field | Description |
+|-------|-------------|
+| `took` | Query execution time in seconds |
+| `results` | List of `SearchResult` objects |
+| `group_by_results` | Results grouped by property (when `group_by` is set) |
+| `generative_grouped_results` | Grouped generative response |
+| `query_profile` | Per-shard profiling data (when `query_profile` metadata is requested) |
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="gRPC overview" icon="bolt" href="/api/grpc-overview">
+    Authentication, port, and the full service definition.
+  </Card>
+  <Card title="gRPC batch operations" icon="layer-group" href="/api/grpc-batch">
+    Bulk insert and streaming ingestion.
+  </Card>
+  <Card title="Hybrid search" icon="shuffle" href="/search/hybrid-search">
+    Conceptual guide to hybrid BM25 + vector search.
+  </Card>
+  <Card title="Generative RAG" icon="robot" href="/search/generative-rag">
+    Retrieval-augmented generation with Weaviate.
+  </Card>
+</CardGroup>

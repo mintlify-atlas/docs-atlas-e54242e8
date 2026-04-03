@@ -1,0 +1,460 @@
+---
+title: "GraphQL Get queries"
+description: "Full reference for Weaviate GraphQL Get queries: search operators, filters, pagination, sorting, _additional fields, and generative search."
+keywords: ["GraphQL", "Get", "nearText", "nearVector", "hybrid", "bm25", "where", "filter", "generative", "pagination"]
+---
+
+The `Get` query retrieves objects from a collection. It supports all Weaviate search modes — vector, keyword, hybrid, filtered — and generative augmentation in a single query.
+
+## Query structure
+
+```graphql basic structure
+{
+  Get {
+    <ClassName>(
+      limit: 10
+      offset: 0
+    ) {
+      <property1>
+      <property2>
+      _additional {
+        id
+        vector
+        distance
+        score
+      }
+    }
+  }
+}
+```
+
+Replace `<ClassName>` with the name of your collection (exact case match required). List the properties you want returned as fields inside the class block.
+
+## Search operators
+
+At most one search operator can be applied per `Get` query.
+
+<CodeGroup>
+
+```graphql nearText
+{
+  Get {
+    Article(
+      nearText: {
+        concepts: ["climate change"]
+        certainty: 0.7
+      }
+      limit: 10
+    ) {
+      title
+      summary
+      _additional { id distance }
+    }
+  }
+}
+```
+
+```graphql nearVector
+{
+  Get {
+    Article(
+      nearVector: {
+        vector: [0.1, 0.2, 0.3]
+        distance: 0.3
+      }
+      limit: 10
+    ) {
+      title
+      _additional { id distance }
+    }
+  }
+}
+```
+
+```graphql hybrid
+{
+  Get {
+    Article(
+      hybrid: {
+        query: "renewable energy policy"
+        alpha: 0.5
+        fusionType: relativeScoreFusion
+      }
+      limit: 10
+    ) {
+      title
+      _additional { id score explainScore }
+    }
+  }
+}
+```
+
+```graphql bm25
+{
+  Get {
+    Article(
+      bm25: {
+        query: "solar panels"
+        properties: ["title", "summary"]
+      }
+      limit: 10
+    ) {
+      title
+      _additional { id score }
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+### nearText arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `concepts` | `[String!]` | Text queries to vectorize |
+| `certainty` | `Float` | Minimum certainty threshold (0–1) |
+| `distance` | `Float` | Maximum vector distance threshold |
+| `moveTo` | `object` | Shift the query vector toward concepts or objects |
+| `moveAwayFrom` | `object` | Shift the query vector away from concepts or objects |
+
+### nearVector arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `vector` | `[Float]` | Raw query vector |
+| `certainty` | `Float` | Minimum certainty (0–1) |
+| `distance` | `Float` | Maximum vector distance |
+| `targetVectors` | `[String]` | Named vectors to search in multi-vector collections |
+
+### hybrid arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `query` | `String` | Text query for both BM25 and vector components |
+| `alpha` | `Float` | Blend weight: `0.0` = pure BM25, `1.0` = pure vector |
+| `vector` | `[Float]` | Override the vector component with a raw vector |
+| `properties` | `[String]` | Restrict BM25 to specific properties |
+| `fusionType` | `enum` | `rankedFusion` (default) or `relativeScoreFusion` |
+| `targetVectors` | `[String]` | Named vectors for multi-vector collections |
+| `maxVectorDistance` | `Float` | Exclude results beyond this vector distance |
+
+### bm25 arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `query` | `String!` | Full-text query |
+| `properties` | `[String]` | Properties to search (all text properties if omitted) |
+
+## Where filter
+
+Use the `where` argument to restrict results to objects matching a structured condition. Filters can be combined with any search operator.
+
+```graphql where filter
+{
+  Get {
+    Article(
+      nearText: { concepts: ["energy transition"] }
+      where: {
+        path: ["year"]
+        operator: GreaterThan
+        valueInt: 2020
+      }
+      limit: 10
+    ) {
+      title
+      year
+      _additional { id distance }
+    }
+  }
+}
+```
+
+### Compound filters with And / Or
+
+```graphql compound filter
+{
+  Get {
+    Article(
+      where: {
+        operator: And
+        operands: [
+          {
+            path: ["year"]
+            operator: GreaterThanEqual
+            valueInt: 2020
+          }
+          {
+            path: ["category"]
+            operator: Equal
+            valueText: "Science"
+          }
+        ]
+      }
+      limit: 20
+    ) {
+      title
+      year
+      category
+    }
+  }
+}
+```
+
+### Filter operators
+
+| Operator | Applicable types |
+|----------|-----------------|
+| `Equal` | text, int, number, boolean, date |
+| `NotEqual` | text, int, number, boolean, date |
+| `LessThan` | int, number, date |
+| `LessThanEqual` | int, number, date |
+| `GreaterThan` | int, number, date |
+| `GreaterThanEqual` | int, number, date |
+| `Like` | text (supports `*` wildcards) |
+| `ContainsAny` | text array |
+| `ContainsAll` | text array |
+| `And` | compound (operands array) |
+| `Or` | compound (operands array) |
+| `Not` | negation |
+| `WithinGeoRange` | geo coordinates |
+| `IsNull` | any nullable property |
+
+See the [filters reference](/search/filters) for value type names (`valueText`, `valueInt`, `valueNumber`, `valueBoolean`, `valueDate`).
+
+## Pagination
+
+```graphql pagination
+{
+  Get {
+    Article(limit: 20 offset: 40) {
+      title
+    }
+  }
+}
+```
+
+For large datasets, use cursor-based pagination with `after` instead of `offset`:
+
+```graphql cursor pagination
+{
+  Get {
+    Article(
+      limit: 100
+      after: "00000000-0000-0000-0000-000000000001"
+    ) {
+      title
+      _additional { id }
+    }
+  }
+}
+```
+
+`after` accepts the UUID of the last result from the previous page. It requires `_additional { id }` to be requested, and cannot be combined with vector search operators.
+
+### autocut
+
+`autocut` stops returning results after the Nth significant drop in score or distance:
+
+```graphql autocut
+{
+  Get {
+    Article(
+      nearText: { concepts: ["AI safety"] }
+      autocut: 2
+    ) {
+      title
+      _additional { distance }
+    }
+  }
+}
+```
+
+## Sorting
+
+Sort results by one or more object properties. Not compatible with vector search operators.
+
+```graphql sort
+{
+  Get {
+    Article(
+      sort: [
+        { path: ["year"], order: desc }
+        { path: ["title"], order: asc }
+      ]
+      limit: 10
+    ) {
+      title
+      year
+    }
+  }
+}
+```
+
+## _additional fields
+
+The `_additional` object exposes metadata about each result:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Object UUID |
+| `vector` | Default embedding vector |
+| `vectors { <name> }` | Named vectors (multi-vector collections) |
+| `distance` | Vector distance from the query |
+| `certainty` | 1 − distance / 2, range 0–1 |
+| `score` | BM25 or hybrid ranking score |
+| `explainScore` | Human-readable score explanation |
+| `creationTimeUnix` | Unix timestamp of creation |
+| `lastUpdateTimeUnix` | Unix timestamp of last update |
+| `isConsistent` | Whether the read was consistent across replicas |
+| `queryProfile` | Per-shard profiling data |
+
+```graphql all additional fields
+{
+  Get {
+    Article(
+      hybrid: { query: "deep learning", alpha: 0.7 }
+      limit: 5
+    ) {
+      title
+      _additional {
+        id
+        distance
+        certainty
+        score
+        explainScore
+        creationTimeUnix
+      }
+    }
+  }
+}
+```
+
+## Generative search (RAG)
+
+Pass retrieved objects to a language model by including a `generate` field inside the class block.
+
+```graphql generative — single result
+{
+  Get {
+    Article(
+      nearText: { concepts: ["climate policy"] }
+      limit: 5
+    ) {
+      title
+      summary
+      _additional {
+        generate(
+          singleResult: {
+            prompt: "Summarize this article in one sentence: {title} — {summary}"
+          }
+        ) {
+          singleResult
+          error
+        }
+      }
+    }
+  }
+}
+```
+
+```graphql generative — grouped result
+{
+  Get {
+    Article(
+      nearText: { concepts: ["climate policy"] }
+      limit: 5
+    ) {
+      title
+      _additional {
+        generate(
+          groupedResult: {
+            task: "What are the common themes across these articles?"
+            properties: ["title", "summary"]
+          }
+        ) {
+          groupedResult
+          error
+        }
+      }
+    }
+  }
+}
+```
+
+`singleResult` generates a response per object using the `prompt` template. `groupedResult` generates a single response for all objects using the `task` prompt.
+
+## Multi-tenant queries
+
+Specify the tenant name with the `tenant` argument:
+
+```graphql multi-tenant
+{
+  Get {
+    Article(
+      tenant: "tenant-a"
+      limit: 10
+    ) {
+      title
+    }
+  }
+}
+```
+
+## Full example
+
+A complete query combining nearText search, a where filter, generative augmentation, and metadata:
+
+```graphql full example
+{
+  Get {
+    Article(
+      nearText: {
+        concepts: ["renewable energy transition"]
+        certainty: 0.65
+      }
+      where: {
+        operator: And
+        operands: [
+          { path: ["year"], operator: GreaterThan, valueInt: 2019 }
+          { path: ["category"], operator: Equal, valueText: "Environment" }
+        ]
+      }
+      limit: 3
+    ) {
+      title
+      summary
+      year
+      category
+      _additional {
+        id
+        distance
+        generate(
+          singleResult: {
+            prompt: "In two sentences, explain the relevance of this article: {title}. {summary}"
+          }
+        ) {
+          singleResult
+        }
+      }
+    }
+  }
+}
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="GraphQL overview" icon="brackets-curly" href="/api/graphql-overview">
+    Endpoint, request format, and authentication.
+  </Card>
+  <Card title="GraphQL Aggregate" icon="chart-bar" href="/api/graphql-aggregate">
+    Statistical summaries over your data.
+  </Card>
+  <Card title="Filters" icon="filter" href="/search/filters">
+    Full filter operator reference.
+  </Card>
+  <Card title="Generative RAG" icon="robot" href="/search/generative-rag">
+    Retrieval-augmented generation with Weaviate.
+  </Card>
+</CardGroup>
